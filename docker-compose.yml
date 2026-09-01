@@ -1,0 +1,121 @@
+# Full stack: Postgres, Pratu v0.3.1, and this Next.js UI.
+#
+#   docker compose up --build
+#   → UI     http://localhost:3000
+#   → Pratu  http://acme.pratu.localhost:4433
+#   → admin  http://localhost:4434
+#
+# One-time codes print to the Pratu log (dev courier):
+#   docker compose logs -f pratu | grep courier
+
+name: pratu-example
+
+x-pratu-env: &pratu-env
+  PRATU_BASE_DOMAIN: ${PRATU_BASE_DOMAIN:-pratu.localhost}
+  PRATU_DATABASE_URL: postgres://pratu:pratu@postgres:5432/pratu?sslmode=disable
+  PRATU_ADMIN_ROOT_KEY: ${PRATU_ADMIN_ROOT_KEY:-devroot}
+  # 32+ chars each. Encrypts TOTP secrets, second-factor phones and signing keys.
+  PRATU_ENCRYPTION_KEYS: ${PRATU_ENCRYPTION_KEYS:-dev-encryption-key-that-is-32-chars-long!!}
+  PRATU_OAUTH2_SYSTEM_SECRET: ${PRATU_OAUTH2_SYSTEM_SECRET:-dev-oauth2-system-secret-32-chars-min!!}
+  # "log" prints one-time codes to stdout. Never use in production.
+  PRATU_COURIER_DRIVER: log
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      # The superuser stays `postgres`; the init script below creates the
+      # unprivileged `pratu` role the server insists on (RLS would be inert
+      # otherwise).
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/devdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres && psql -U postgres -d pratu -c 'select 1'"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # One-shot: brings the schema up to date, then exits.
+  migrate:
+    build: &pratu-build
+      context: https://github.com/katipwork/pratu.git#v0.3.1
+      args:
+        VERSION: v0.3.1
+    image: pratu:v0.3.1
+    command: ["migrate"]
+    environment: *pratu-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  pratu:
+    build: *pratu-build
+    image: pratu:v0.3.1
+    command: ["serve"]
+    environment: *pratu-env
+    ports:
+      - "${PRATU_PUBLIC_PORT:-4433}:4433"
+      - "${PRATU_ADMIN_PORT:-4434}:4434"
+    networks:
+      default:
+        aliases:
+          # Pratu resolves the tenant from the Host header, so the web container
+          # must reach it *by the tenant hostname*. This alias makes
+          # acme.pratu.localhost resolve inside the compose network.
+          - ${PRATU_TENANT_HOST:-acme.pratu.localhost}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4433/health/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  # One-shot: creates the demo tenant. Idempotent — an existing slug is fine.
+  bootstrap:
+    image: curlimages/curl:8.11.1
+    environment:
+      SLUG: ${PRATU_TENANT_SLUG:-acme}
+      ROOT_KEY: ${PRATU_ADMIN_ROOT_KEY:-devroot}
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        code=$$(curl -s -o /tmp/out -w '%{http_code}' -X POST http://pratu:4434/admin/tenants \
+          -H "Authorization: Bearer $$ROOT_KEY" -H 'Content-Type: application/json' \
+          -d "{\"slug\":\"$$SLUG\",\"name\":\"Acme Inc\"}")
+        cat /tmp/out; echo
+        case "$$code" in
+          2*) echo "tenant $$SLUG created" ;;
+          409) echo "tenant $$SLUG already exists" ;;
+          *)  echo "failed to create tenant (HTTP $$code)"; exit 1 ;;
+        esac
+    depends_on:
+      pratu:
+        condition: service_healthy
+    restart: "no"
+
+  web:
+    build:
+      # Root context: the Dockerfile needs the whole pnpm workspace.
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      # Must be the tenant hostname, not the service name — see docs/architecture.md.
+      PRATU_TENANT_URL: http://${PRATU_TENANT_HOST:-acme.pratu.localhost}:4433
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+
+networks:
+  default:

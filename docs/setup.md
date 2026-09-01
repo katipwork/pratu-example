@@ -1,9 +1,57 @@
 # Running this example
 
 You need a Pratu v0.3.1 server with one tenant, and this Next.js app pointed at
-it.
+it. Either let Docker do all of it, or run the two halves yourself.
 
-## 1. Run Pratu
+## Option A — Docker Compose (everything at once)
+
+```bash
+docker compose up --build
+```
+
+That builds Pratu from the pinned tag, migrates, starts it, creates the `acme`
+tenant, and serves the UI:
+
+| | |
+|---|---|
+| UI | <http://localhost:3000> |
+| Pratu | <http://acme.pratu.localhost:4433> |
+| Admin API | <http://localhost:4434> (`Authorization: Bearer devroot`) |
+
+A cold start from an empty volume takes about ten seconds. Read one-time codes
+from the Pratu log:
+
+```bash
+docker compose logs -f pratu | grep courier
+```
+
+Override anything in `.env` (see `.env.example`) — ports collide often:
+
+```bash
+WEB_PORT=3100
+PRATU_PUBLIC_PORT=4533
+PRATU_ADMIN_PORT=4534
+```
+
+Two details worth knowing about the compose file:
+
+- **Postgres runs as `postgres`, not `pratu`.** Pratu refuses to start on a role
+  with `SUPERUSER` or `BYPASSRLS`, because its row-level-security policies
+  would be silently inert. `docker/devdb/01-app-role.sql` creates the
+  unprivileged `pratu` role, mirroring upstream's own dev bootstrap.
+- **The `pratu` service has a network alias of the tenant hostname.** The web
+  container has to reach it *as* `acme.pratu.localhost`, since the tenant is
+  resolved from the Host header and Node cannot fake one.
+
+Teardown, including the database volume:
+
+```bash
+docker compose down -v
+```
+
+## Option B — run the pieces yourself
+
+### 1. Run Pratu
 
 ```bash
 git clone https://github.com/katipwork/pratu
@@ -32,7 +80,7 @@ make migrate
 make run        # public :4433, admin :4434
 ```
 
-## 2. Create a tenant
+### 2. Create a tenant
 
 The tenant slug plus `base_domain` forms the hostname the app will call.
 
@@ -52,7 +100,7 @@ curl http://acme.pratu.localhost:4433/health/alive   # {"status":"ok"}
 `*.localhost` resolves to loopback with no DNS setup. It resolves to **`::1`**,
 so Pratu must be listening dual-stack — the default `":4433"` is.
 
-## 3. Run the app
+### 3. Run the app
 
 ```bash
 pnpm install
@@ -68,7 +116,7 @@ PRATU_TENANT_URL=http://acme.pratu.localhost:4433
 
 Open <http://localhost:3000>.
 
-## 4. Read the one-time codes
+### 4. Read the one-time codes
 
 The dev courier is `driver: log`, so codes are printed rather than delivered:
 

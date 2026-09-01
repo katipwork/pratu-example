@@ -22,8 +22,19 @@ tenant would write its own.
 ## Quick start
 
 ```bash
-# 1. a Pratu server with a tenant — see docs/setup.md
-# 2. then:
+docker compose up --build
+```
+
+Builds Pratu from the pinned tag, migrates, creates the `acme` tenant and serves
+the UI on <http://localhost:3000>. One-time codes go to the Pratu log:
+
+```bash
+docker compose logs -f pratu | grep courier
+```
+
+Or run against your own Pratu server:
+
+```bash
 pnpm install
 cp apps/web/.env.example apps/web/.env.local
 pnpm dev
@@ -75,6 +86,10 @@ apps/web/src/
 ├── lib/pratu/     client, typed endpoints, session + flow cookies
 ├── app/actions.ts server actions — the state machine of every flow
 └── app/…          one directory per screen
+
+docker-compose.yml   postgres + pratu v0.3.1 + this app
+docker/devdb/        creates the unprivileged role Pratu requires
+apps/web/Dockerfile  standalone Next.js build
 ```
 
 This is a pnpm workspace (`apps/*`, `packages/*`) with Turborepo, so a second

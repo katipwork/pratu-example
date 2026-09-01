@@ -1,0 +1,27 @@
+# Host artefacts must never enter the image: the deps stage installs its own
+# node_modules, and copying the host's over it makes pnpm abort.
+node_modules
+**/node_modules
+.next
+**/.next
+out
+dist
+.turbo
+
+.git
+.gitignore
+Dockerfile
+**/Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Secrets and local overrides.
+.env
+.env.*
+!.env.example
+
+# Not needed to build the app.
+docs
+e2e
+README.md
+*.log

@@ -146,3 +146,35 @@ distinguish "wrong password" from "correct password, now prove your phone".
 - **Returning JSX from inside `try`/`catch` is unsafe** in React — render errors
   escape the handler. Flow creation uses `attempt()` so the try/catch closes
   before any JSX exists.
+
+## Running it in Docker
+
+The same Host-header constraint shapes `docker-compose.yml`. Service names do
+not help — calling `http://pratu:4433` would send `Host: pratu` and resolve no
+tenant. The `pratu` service therefore carries a **network alias of the tenant
+hostname**, so `acme.pratu.localhost` resolves inside the compose network and
+the URL and the Host agree:
+
+```yaml
+networks:
+  default:
+    aliases:
+      - acme.pratu.localhost
+```
+
+Two more things that bite:
+
+- **Postgres must not run as the app role.** Pratu refuses to start when its
+  connection has `SUPERUSER` or `BYPASSRLS`, because that makes every
+  row-level-security policy silently inert. `POSTGRES_USER=pratu` produces
+  exactly that, so the superuser stays `postgres` and
+  `docker/devdb/01-app-role.sql` creates an unprivileged `pratu` role — the
+  same bootstrap upstream uses.
+- **A `.dockerignore` is mandatory, not tidiness.** `COPY . .` would drag the
+  host's `node_modules` over the ones installed in the image, and pnpm aborts
+  with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` rather than silently
+  continuing.
+
+Pratu is built straight from the pinned tag
+(`context: https://github.com/katipwork/pratu.git#v0.3.1`), so the compose file
+cannot drift from the version this UI was written against.
