@@ -1,129 +1,80 @@
-import "server-only";
-
-import { PRATU_TENANT_URL } from "./config";
-
 /**
- * A non-2xx response from Pratu.
+ * Browser-flow transport.
  *
- * `payload` keeps the parsed body, because some non-2xx responses are part of
- * the happy path: a login held for a second factor answers 403 with
- * `{state: "mfa_required", methods: [...]}`.
+ * Every call is same-origin: the app and Pratu are served from one hostname by
+ * the reverse proxy, because Pratu's cookies are HttpOnly and host-scoped to
+ * the tenant and the server supports no CORS. Paths are therefore relative and
+ * there is no base URL to configure.
+ *
+ * Two kinds of CSRF live here:
+ *  - *flow scope* — `csrf_token` from the flow, sent in the request body of
+ *    every flow submission.
+ *  - *session scope* — the token from `GET /sessions/whoami`, sent as an
+ *    `X-CSRF-Token` header on state-changing calls against a session
+ *    (logout, MFA management).
  */
-export class PratuError extends Error {
-  readonly status: number;
-  readonly details: string[];
-  readonly payload: unknown;
-  readonly retryAfter?: string;
 
-  constructor(
-    status: number,
-    message: string,
-    details: string[] = [],
-    payload: unknown = undefined,
-    retryAfter?: string,
-  ) {
-    super(message);
-    this.name = "PratuError";
-    this.status = status;
-    this.details = details;
-    this.payload = payload;
-    this.retryAfter = retryAfter;
-  }
-}
-
-export interface RequestOptions {
-  method?: "GET" | "POST" | "DELETE";
-  /** JSON body. Omitted entirely when undefined. */
-  body?: unknown;
-  /** Opaque session token from an API flow; sent as `X-Session-Token`. */
-  sessionToken?: string;
-  /** Query string parameters; undefined values are dropped. */
-  query?: Record<string, string | undefined>;
-}
-
-export interface RawResponse<T> {
+export interface ApiResult<T> {
   ok: boolean;
   status: number;
   data: T;
 }
 
-function buildUrl(path: string, query?: RequestOptions["query"]): string {
-  const url = new URL(path, PRATU_TENANT_URL);
-  for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== undefined) url.searchParams.set(key, value);
-  }
-  return url.toString();
-}
-
-/**
- * Calls Pratu and returns the parsed body with its status, without throwing.
- * Use this when a non-2xx status carries meaning (held logins).
- */
-export async function requestRaw<T>(
+export async function api<T = unknown>(
+  method: "GET" | "POST" | "DELETE",
   path: string,
-  options: RequestOptions = {},
-): Promise<RawResponse<T>> {
-  const { method = "GET", body, sessionToken, query } = options;
+  body?: unknown,
+  headers: Record<string, string> = {},
+): Promise<ApiResult<T>> {
+  const init: RequestInit = {
+    method,
+    // Sends and accepts Pratu's host-scoped cookies.
+    credentials: "same-origin",
+    // Ask for JSON explicitly: browser flows are content-negotiated and would
+    // answer an HTML-preferring client with 303 redirects instead.
+    headers: { Accept: "application/json", ...headers },
+  };
 
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  // API flows authenticate with the opaque token; they never need CSRF.
-  if (sessionToken) headers["X-Session-Token"] = sessionToken;
+  if (body !== undefined) {
+    init.headers = { ...init.headers, "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
 
   let response: Response;
   try {
-    response = await fetch(buildUrl(path, query), {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      // Never let Next cache an auth call.
-      cache: "no-store",
-    });
-  } catch (cause) {
-    throw new PratuError(
-      0,
-      `Cannot reach the Pratu server at ${PRATU_TENANT_URL}. Is it running?`,
-      [cause instanceof Error ? cause.message : String(cause)],
-    );
+    response = await fetch(path, init);
+  } catch {
+    return {
+      ok: false,
+      status: 0,
+      data: {
+        error: { message: "Cannot reach the server. Check your connection." },
+      } as T,
+    };
   }
 
-  const text = await response.text();
-  let data: unknown = undefined;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { error: { message: text } };
-    }
+  let data: unknown = null;
+  try {
+    data = await response.json();
+  } catch {
+    // Some endpoints answer with an empty body.
   }
 
   return { ok: response.ok, status: response.status, data: data as T };
 }
 
-/** Calls Pratu and throws {@link PratuError} on any non-2xx status. */
-export async function request<T>(
-  path: string,
-  options: RequestOptions = {},
-): Promise<T> {
-  const response = await requestRaw<T>(path, options);
-  if (!response.ok) throw toError(response.status, response.data);
-  return response.data;
-}
-
-/** Normalises Pratu's `{error: {message, details}}` envelope into an Error. */
-export function toError(status: number, payload: unknown): PratuError {
-  const envelope = payload as
+/** Flattens Pratu's `{error: {message, details}}` envelope into one string. */
+export function errorText(result: ApiResult<unknown>): string {
+  const envelope = result.data as
     | { error?: { message?: string; details?: string[] } }
     | undefined;
-  const message =
-    envelope?.error?.message ??
-    (status === 429
+  const error = envelope?.error;
+  if (!error?.message) {
+    return result.status === 429
       ? "Too many attempts. Please wait and try again."
-      : `Request failed with status ${status}`);
-  return new PratuError(
-    status,
-    message,
-    envelope?.error?.details ?? [],
-    payload,
-  );
+      : `Request failed (${result.status})`;
+  }
+  return error.details?.length
+    ? `${error.message}: ${error.details.join("; ")}`
+    : error.message;
 }

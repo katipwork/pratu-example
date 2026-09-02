@@ -14,9 +14,12 @@ tenant, and serves the UI:
 
 | | |
 |---|---|
-| UI | <http://localhost:3000> |
-| Pratu | <http://acme.pratu.localhost:4433> |
+| **App + auth API (one origin)** | <http://acme.pratu.localhost:8080> |
 | Admin API | <http://localhost:4434> (`Authorization: Bearer devroot`) |
+
+**Use the tenant hostname, not `localhost`.** Browser flows put the session and
+CSRF cookies on `acme.pratu.localhost`, and the API has no CORS — opening the
+app on `localhost:8080` gives you a UI that cannot sign anyone in.
 
 A cold start from an empty volume takes about ten seconds. Read one-time codes
 from the Pratu log:
@@ -28,20 +31,21 @@ docker compose logs -f pratu | grep courier
 Override anything in `.env` (see `.env.example`) — ports collide often:
 
 ```bash
-WEB_PORT=3100
+APP_PORT=8080
 PRATU_PUBLIC_PORT=4533
 PRATU_ADMIN_PORT=4534
 ```
 
-Two details worth knowing about the compose file:
+Three details worth knowing about the compose file:
 
+- **Caddy is the only web port you use.** It puts the app and Pratu on one
+  origin, which browser flows require: the cookies are host-scoped to the
+  tenant and there is no CORS. Pratu's own port is published only so you can
+  curl it directly.
 - **Postgres runs as `postgres`, not `pratu`.** Pratu refuses to start on a role
   with `SUPERUSER` or `BYPASSRLS`, because its row-level-security policies
   would be silently inert. `docker/devdb/01-app-role.sql` creates the
   unprivileged `pratu` role, mirroring upstream's own dev bootstrap.
-- **The `pratu` service has a network alias of the tenant hostname.** The web
-  container has to reach it *as* `acme.pratu.localhost`, since the tenant is
-  resolved from the Host header and Node cannot fake one.
 
 Teardown, including the database volume:
 
@@ -100,21 +104,25 @@ curl http://acme.pratu.localhost:4433/health/alive   # {"status":"ok"}
 `*.localhost` resolves to loopback with no DNS setup. It resolves to **`::1`**,
 so Pratu must be listening dual-stack — the default `":4433"` is.
 
-### 3. Run the app
+### 3. Run the app behind a proxy
+
+The app needs no configuration at all — it calls Pratu on relative paths. What
+it does need is to be served from the same origin as Pratu, so run the bundled
+`Caddyfile` alongside it:
 
 ```bash
 pnpm install
-cp apps/web/.env.example apps/web/.env.local
-pnpm dev
+pnpm dev                                    # Next.js on :3000
+
+# in another shell
+caddy run --config Caddyfile                # :8080 → app + Pratu
 ```
 
-`.env.local` holds the tenant origin — the whole config:
+The defaults point at `localhost:3000` and `localhost:4433`; override with
+`WEB_UPSTREAM` and `PRATU_UPSTREAM` if you moved either.
 
-```bash
-PRATU_TENANT_URL=http://acme.pratu.localhost:4433
-```
-
-Open <http://localhost:3000>.
+Open <http://acme.pratu.localhost:8080> — **not** `localhost:3000`, which would
+put the app on a different origin from the cookies.
 
 ### 4. Read the one-time codes
 
@@ -138,7 +146,8 @@ grep -oE '"code":"[0-9]+"' server.log | tail -1
 2. **Two-factor** at `/mfa` — scan the QR with any authenticator app, or enrol a
    phone (`+66812345678`) and read its code from the log.
 3. **Mobile OTP login** — sign out, sign in with your password. Because a phone
-   is enrolled you are held at `/login/mfa`; press *Text me a code*.
+   is enrolled the second factor appears in place on `/login`; press
+   *Text me a code*.
 4. **Recovery** at `/recovery` — the emailed code, then your second factor, then
    a new password. Every other session is revoked.
 
@@ -172,10 +181,16 @@ an identity with no factor — this app routes that to `/mfa`.
 
 ## Troubleshooting
 
-**"Cannot reach the Pratu server"** — the origin in `PRATU_TENANT_URL` must be
-the tenant hostname, not `127.0.0.1`. Pratu picks the tenant from the Host
-header, and Node's `fetch` cannot fake it. See
+**Sign-in silently fails, or every submission answers 403** — you are almost
+certainly on the wrong origin. Open the app at `http://acme.pratu.localhost:8080`;
+on `localhost:8080` the tenant does not resolve, and on `localhost:3000` the
+app bypasses the proxy entirely so the cookies never match. See
 [architecture.md](architecture.md).
+
+**`csrf_violation` / 403 on a submission** — the flow's `csrf_token` was not
+sent in the body, or the `pratu_csrf` cookie was dropped. Both halves are
+required. Session-scoped calls (logout, MFA) need the *other* token, from
+`whoami`, in an `X-CSRF-Token` header.
 
 **404 / "tenant not found"** — the slug in the hostname has no tenant row, or
 `base_domain` in `pratu.yaml` does not match the hostname you are calling.
@@ -192,6 +207,7 @@ the outbox is retrying). Match on `recipient` *and* `template`, since one
 address receives `verification_code`, `recovery_code`, `mfa_code` and
 `mfa_enroll_code` over a session.
 
-**Port already in use** — override with
-`PRATU_PUBLIC_LISTEN=":14433" PRATU_ADMIN_LISTEN=":14434"`, and update
-`PRATU_TENANT_URL` to match.
+**Port already in use** — with Docker, set `APP_PORT` / `PRATU_PUBLIC_PORT` /
+`PRATU_ADMIN_PORT` in `.env`. Running Pratu directly, override
+`PRATU_PUBLIC_LISTEN=":14433" PRATU_ADMIN_LISTEN=":14434"` and point
+`PRATU_UPSTREAM` at the new port when starting Caddy.

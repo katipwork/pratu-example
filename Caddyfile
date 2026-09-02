@@ -1,0 +1,28 @@
+# Puts the UI and Pratu on one origin.
+#
+# Browser flows depend on it: Pratu's cookies are HttpOnly and host-scoped to
+# the tenant hostname, and the server supports no CORS. The browser must
+# therefore reach both the app and the auth API at the same origin —
+# http://acme.pratu.localhost:8080 by default.
+#
+# Caddy passes the Host header through unchanged, which is what selects the
+# tenant. Pratu strips the port, so :8080 in the Host is fine.
+
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# Everything Pratu owns. Order matters: this is matched before the app.
+	@pratu path /self-service/* /sessions/* /oauth2/* /.well-known/* /health/*
+	reverse_proxy @pratu {$PRATU_UPSTREAM:localhost:4433}
+
+	# Everything else is the Next.js app.
+	reverse_proxy {$WEB_UPSTREAM:localhost:3000}
+
+	log {
+		output stderr
+		format console
+	}
+}

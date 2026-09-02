@@ -12,11 +12,12 @@ node e2e/totp-recovery.mjs
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BASE_URL` | `http://localhost:3000` | where `pnpm dev` is serving |
+| `BASE_URL` | `http://acme.pratu.localhost:8080` | the proxied origin (**not** localhost) |
 | `PRATU_LOG` | `/tmp/pratu-server.log` | Pratu's stdout, for reading codes |
 
-**mobile-otp.mjs** — register → verify email → enrol SMS second factor → sign
-out → password login held at `/login/mfa` → SMS OTP → `aal2`.
+**mobile-otp.mjs** — register → verify email → assert the session is a
+HttpOnly `pratu_session` cookie → enrol SMS second factor → sign out → password
+login held in place → SMS OTP → `aal2`.
 
 **totp-recovery.mjs** — register → verify → enrol TOTP (QR + generated code) →
 TOTP login → recovery with a second factor → new password → old password

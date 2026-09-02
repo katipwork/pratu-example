@@ -1,21 +1,30 @@
 # The five flows
 
-Every request below is addressed to the tenant origin
-(`http://acme.pratu.localhost:4433`). All of these were exercised against a real
-Pratu v0.3.1 server; the responses shown are actual output.
+Every request below is same-origin against the tenant
+(`http://acme.pratu.localhost:8080`, the proxy). All of these were exercised
+against a real Pratu v0.3.1 server; the responses shown are actual output.
+
+These are **browser flows**, so:
+
+- Every submission carries the flow's `csrf_token` **in the body**. Omitting it
+  answers `403`.
+- Success sets the `pratu_session` cookie and returns **no** `session_token`.
+- Session-scoped calls (logout, MFA management) carry the token from `whoami`
+  in an `X-CSRF-Token` **header** instead.
+- Send `Accept: application/json`, or a browser flow answers an
+  HTML-preferring client with 303 redirects to the tenant's own screens.
 
 Common shapes:
 
-- **Flow** — `{id, kind, expires_at, state, ui: {fields, methods}, messages}`
-- **AuthResult** — `{state, identity, session, session_token, verification}`
-- `session_token` appears on API flows only; browser flows set a cookie.
+- **Flow** — `{id, kind, expires_at, state, csrf_token, ui: {fields, methods}, messages}`
+- **AuthResult** — `{state, identity, session, verification}`
 
 ---
 
 ## 1. Registration
 
 ```
-POST /self-service/registration/api            → Flow
+GET  /self-service/registration/browser        → Flow  (sets the CSRF cookie)
 POST /self-service/registration?flow={id}      → AuthResult
 ```
 
@@ -40,8 +49,11 @@ so the form is never hardcoded:
 // POST /self-service/registration?flow=…
 { "method": "password",
   "traits": { "email": "nid@example.com", "name": "Nid" },
-  "password": "correct-horse-battery-staple" }
+  "password": "correct-horse-battery-staple",
+  "csrf_token": "dyso0bQmVs-0z_Uy6PwYz_NfWyZ4-p9MPSzw3jdBG0o" }
 ```
+
+Without `csrf_token` the same request answers `403`.
 
 Under the default `verification: required` policy the session is **withheld**:
 
@@ -52,7 +64,7 @@ Under the default `verification: required` policy the session is **withheld**:
                     "address": "n****@example.com" } }
 ```
 
-No `session` and no `session_token` — continue to verification.
+No `session` and no cookie yet — continue to verification.
 
 Password policy is NIST 800-63B: length (default 10) plus a breach check, and
 deliberately **no composition rules**, so don't render "1 symbol, 1 digit" hints.
@@ -70,24 +82,25 @@ Five wrong attempts invalidate the code. When the flow was spawned by a
 session-withholding registration, success issues the session:
 
 ```json
-{ "state": "verified", "identity": {…}, "session": {…, "aal": "aal1"},
-  "session_token": "pst_BQMuEGhQPBib5kPe…" }
+{ "state": "verified", "identity": {…}, "session": {…, "aal": "aal1"} }
 ```
+
+The `pratu_session` cookie is set on this response; there is no token to keep.
 
 ---
 
 ## 3. Login
 
 ```
-POST /self-service/login/api           → Flow
-POST /self-service/login?flow={id}     {method, identifier, password}
+GET  /self-service/login/browser       → Flow
+POST /self-service/login?flow={id}     {method, identifier, password, csrf_token}
 ```
 
 Three outcomes. **A 403 here is not a failure** — it means the password was
 right and another step is owed:
 
 ```
-                 ┌── 200 {state:"active", session_token}          ─▶ signed in
+                 ┌── 200 {state:"active"} + Set-Cookie            ─▶ signed in
 POST /login ─────┼── 403 {state:"verification_required", …}       ─▶ /verify
                  └── 403 {state:"mfa_required", methods:["sms"]}  ─▶ second factor
 ```
@@ -95,8 +108,8 @@ POST /login ─────┼── 403 {state:"verification_required", …}   
 A tenant with `mfa: required` can also answer `200` with
 `state: "mfa_enrollment_required"` — signed in, but must enrol a factor now.
 
-This is why `submitLogin()` uses `requestRaw()` and inspects the status itself
-instead of letting a non-2xx throw.
+This is why the client returns `{ok, status, data}` and the screen inspects the
+status itself, rather than treating any non-2xx as failure.
 
 ---
 
@@ -108,7 +121,7 @@ the session is upgraded to `aal2`.
 ### TOTP
 
 ```
-POST /self-service/login/totp?flow={id}   {code}   → AuthResult (aal2)
+POST /self-service/login/totp?flow={id}   {code, csrf_token}   → AuthResult (aal2)
 ```
 
 ### SMS — the mobile OTP login
@@ -116,9 +129,11 @@ POST /self-service/login/totp?flow={id}   {code}   → AuthResult (aal2)
 Two endpoints, because sending and proving are separate steps:
 
 ```
-POST /self-service/login/sms/send?flow={id}   → {"state":"sent","address":"********5678"}
-POST /self-service/login/sms?flow={id}  {code} → {"state":"active", session:{aal:"aal2"}, session_token}
+POST /self-service/login/sms/send?flow={id}  {csrf_token}        → {"state":"sent","address":"********5678"}
+POST /self-service/login/sms?flow={id}       {code, csrf_token}  → {"state":"active", session:{aal:"aal2"}}
 ```
+
+The held login is still the same flow — same id, same `csrf_token`.
 
 Full journey as verified:
 
@@ -147,10 +162,10 @@ Multi-step and uniformly anti-enumeration: the response is identical whether or
 not the address exists, and even when a send cap suppressed delivery.
 
 ```
-POST /self-service/recovery/api              → Flow
-POST /self-service/recovery?flow={id}        {address}
+GET  /self-service/recovery/browser          → Flow
+POST /self-service/recovery?flow={id}        {address, csrf_token}
      → {"state":"code_sent","message":"if the address exists, a code was sent to it"}
-POST /self-service/recovery/code?flow={id}   {code}
+POST /self-service/recovery/code?flow={id}   {code, csrf_token}
      → {"state":"set_password"}                        ─▶ straight to the password screen
      → {"state":"second_factor_required","methods":["sms"]}  ─▶ MFA first
 ```
@@ -158,16 +173,16 @@ POST /self-service/recovery/code?flow={id}   {code}
 **Recovery never bypasses MFA.** The second-factor endpoints mirror login:
 
 ```
-POST /self-service/recovery/totp?flow={id}      {code}  → {"state":"set_password"}
-POST /self-service/recovery/sms/send?flow={id}          → {"state":"sent"}
-POST /self-service/recovery/sms?flow={id}       {code}  → {"state":"set_password"}
+POST /self-service/recovery/totp?flow={id}      {code, csrf_token}  → {"state":"set_password"}
+POST /self-service/recovery/sms/send?flow={id}  {csrf_token}        → {"state":"sent"}
+POST /self-service/recovery/sms?flow={id}       {code, csrf_token}  → {"state":"set_password"}
 ```
 
 Then:
 
 ```
-POST /self-service/recovery/password?flow={id}  {password}
-     → {"state":"recovered", session:{aal:"aal2"}, session_token}
+POST /self-service/recovery/password?flow={id}  {password, csrf_token}
+     → {"state":"recovered", session:{aal:"aal2"}}
 ```
 
 Completing recovery replaces the credential, marks the recovery address
@@ -187,14 +202,22 @@ because the server deliberately tells you nothing.
 
 ## 6. MFA enrolment (needs a session)
 
-```
-POST   /self-service/mfa/totp/enroll                  → {flow_id, secret, uri}
-POST   /self-service/mfa/totp/confirm?flow={id} {code} → {state:"enrolled", session:{aal:"aal2"}}
-DELETE /self-service/mfa/totp                          (requires aal2)
+These are **session-scoped**, not flows, so they authenticate with the
+`pratu_session` cookie and need the session CSRF token from `whoami` in an
+`X-CSRF-Token` header. Without it they answer `403`. The enrolment itself still
+returns a flow with its own `csrf_token`, which the confirm step sends in the
+body — both tokens are required there.
 
-POST   /self-service/mfa/sms/enroll   {phone}          → {flow_id, address:"********5678"}
-POST   /self-service/mfa/sms/confirm?flow={id}  {code} → {state:"enrolled", session:{aal:"aal2"}}
-DELETE /self-service/mfa/sms                           (requires aal2)
+```
+POST   /self-service/mfa/totp/enroll                   → {flow_id, secret, uri, csrf_token}
+POST   /self-service/mfa/totp/confirm?flow={id} {code, csrf_token}
+                                                       → {state:"enrolled", session:{aal:"aal2"}}
+DELETE /self-service/mfa/totp                           (requires aal2)
+
+POST   /self-service/mfa/sms/enroll   {phone}           → {flow_id, address:"********5678", csrf_token}
+POST   /self-service/mfa/sms/confirm?flow={id}  {code, csrf_token}
+                                                       → {state:"enrolled", session:{aal:"aal2"}}
+DELETE /self-service/mfa/sms                            (requires aal2)
 ```
 
 The TOTP secret stays **pending** until a code proves the authenticator holds
@@ -217,10 +240,34 @@ login.
 
 ---
 
-## Cookie-session extras (not used here)
+## Re-reading a flow
 
-If you switch to browser flows, state-changing calls on a cookie session
-(logout, session revocation, MFA enrolment, OAuth2 accept) additionally require
-the session-scope CSRF token in an `X-CSRF-Token` header, bootstrapped from
-`GET /sessions/whoami`. Header-token requests never need CSRF, which is one more
-reason this example uses them.
+```
+GET /self-service/flows/{id} → Flow
+```
+
+What a screen renders after landing on `?flow=`: the step the flow waits on
+(`state`), the fields to show, the second-factor methods, the `csrf_token`, and
+the messages from the last submission. Readable only by the browser whose CSRF
+cookie created the flow.
+
+Verification flow, mid-journey:
+
+```json
+{ "id": "9afb6376-…", "kind": "verification", "state": "code_required",
+  "csrf_token": "nxwHG6AbQg59L_1l_…",
+  "ui": { "fields": [ { "name": "code", "type": "text", "title": "Code", "required": true } ] } }
+```
+
+Flow states: `choose_method`, `code_required`, `mfa_required`,
+`second_factor_required`, `password_required`.
+
+## Session
+
+```
+GET  /sessions/whoami   → {session, identity, csrf_token}
+POST /self-service/logout   (X-CSRF-Token)
+```
+
+`whoami` is the only way to read the session, since `pratu_session` is HttpOnly,
+and it is where the session-scope CSRF token comes from.

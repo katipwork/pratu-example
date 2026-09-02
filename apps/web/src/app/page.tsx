@@ -1,9 +1,8 @@
+"use client";
+
 import Link from "next/link";
 
-import { currentUser } from "@/lib/pratu/session";
-import { PRATU_TENANT_URL } from "@/lib/pratu/config";
-
-export const dynamic = "force-dynamic";
+import { useSession } from "@/lib/pratu/use-session";
 
 const flows = [
   {
@@ -28,8 +27,8 @@ const flows = [
   },
 ];
 
-export default async function Home() {
-  const user = await currentUser();
+export default function Home() {
+  const { session } = useSession();
 
   return (
     <div className="w-full max-w-2xl">
@@ -46,18 +45,17 @@ export default async function Home() {
         >
           Pratu v0.3.1
         </a>
-        , driven server-side through API flows against{" "}
-        <code className="rounded bg-black/5 px-1 text-xs dark:bg-white/10">
-          {PRATU_TENANT_URL}
-        </code>
-        .
+        , driven from the browser with cookies and CSRF — the app and the auth
+        API share one origin.
       </p>
 
-      {user ? (
+      {session ? (
         <p className="mt-6 rounded-lg border border-green-600/30 bg-green-600/10 px-4 py-3 text-sm">
           Signed in as{" "}
-          <strong>{String(Object.values(user.identity.traits)[0] ?? "—")}</strong>{" "}
-          ({user.session.aal}) ·{" "}
+          <strong>
+            {String(Object.values(session.identity.traits)[0] ?? "—")}
+          </strong>{" "}
+          ({session.session.aal}) ·{" "}
           <Link href="/dashboard" className="underline">
             Dashboard
           </Link>

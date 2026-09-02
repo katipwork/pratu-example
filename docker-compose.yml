@@ -60,13 +60,6 @@ services:
     ports:
       - "${PRATU_PUBLIC_PORT:-4433}:4433"
       - "${PRATU_ADMIN_PORT:-4434}:4434"
-    networks:
-      default:
-        aliases:
-          # Pratu resolves the tenant from the Host header, so the web container
-          # must reach it *by the tenant hostname*. This alias makes
-          # acme.pratu.localhost resolve inside the compose network.
-          - ${PRATU_TENANT_HOST:-acme.pratu.localhost}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -105,14 +98,27 @@ services:
       # Root context: the Dockerfile needs the whole pnpm workspace.
       context: .
       dockerfile: apps/web/Dockerfile
-    environment:
-      # Must be the tenant hostname, not the service name — see docs/architecture.md.
-      PRATU_TENANT_URL: http://${PRATU_TENANT_HOST:-acme.pratu.localhost}:4433
-    ports:
-      - "${WEB_PORT:-3000}:3000"
+    # No Pratu URL here: the browser talks to Pratu directly, same-origin
+    # through Caddy. The app server never calls the auth API.
     depends_on:
       bootstrap:
         condition: service_completed_successfully
+
+  # The single origin the browser uses. Without it, browser flows cannot work:
+  # the session and CSRF cookies are host-scoped to the tenant and there is no
+  # CORS.
+  caddy:
+    image: caddy:2.10-alpine
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      PRATU_UPSTREAM: pratu:4433
+      WEB_UPSTREAM: web:3000
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    depends_on:
+      - web
+      - pratu
 
 volumes:
   pgdata:

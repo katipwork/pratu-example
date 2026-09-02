@@ -14,9 +14,9 @@ tenant would write its own.
 |---|---|---|
 | **Registration** | `/register` → `/verify` | Fields come from the tenant's Identity Schema |
 | **Login** | `/login` | Branches into verification or a second factor |
-| **Mobile OTP login** | `/login/mfa` | Password → SMS one-time code → `aal2` |
-| **2FA** | `/login/mfa`, `/mfa` | TOTP with QR enrolment, SMS enrolment |
-| **Recovery** | `/recovery/…` | Code → second factor → new password |
+| **Mobile OTP login** | `/login` | Password → SMS one-time code → `aal2`, in place |
+| **2FA** | `/login`, `/mfa` | TOTP with QR enrolment, SMS enrolment |
+| **Recovery** | `/recovery` | Code → second factor → new password, driven by flow state |
 | **Session** | `/dashboard` | `whoami`, assurance level, unenrolment |
 
 ## Quick start
@@ -26,24 +26,21 @@ docker compose up --build
 ```
 
 Builds Pratu from the pinned tag, migrates, creates the `acme` tenant and serves
-the UI on <http://localhost:3000>. One-time codes go to the Pratu log:
+everything on one origin at <http://acme.pratu.localhost:8080>. One-time codes
+go to the Pratu log:
 
 ```bash
 docker compose logs -f pratu | grep courier
 ```
 
-Or run against your own Pratu server:
+Or run against your own Pratu server. The app needs no configuration — it calls
+Pratu on relative paths — but it must share an origin with it, so run the
+bundled `Caddyfile` alongside:
 
 ```bash
 pnpm install
-cp apps/web/.env.example apps/web/.env.local
-pnpm dev
-```
-
-One environment variable, the tenant origin:
-
-```bash
-PRATU_TENANT_URL=http://acme.pratu.localhost:4433
+pnpm dev                          # Next.js on :3000
+caddy run --config Caddyfile      # :8080 → app + Pratu, one origin
 ```
 
 ## Docs
@@ -52,28 +49,30 @@ PRATU_TENANT_URL=http://acme.pratu.localhost:4433
   codes from the dev courier, walk each flow, troubleshoot.
 - **[docs/flows.md](docs/flows.md)** — every endpoint with real request and
   response bodies, and the branching each flow can take.
-- **[docs/architecture.md](docs/architecture.md)** — why API flows instead of
-  browser flows, how sessions and multi-step flows are carried, and the traps
-  found while building this.
+- **[docs/architecture.md](docs/architecture.md)** — why browser flows need one
+  origin, the two CSRF scopes, how flows are carried across screens, and the
+  traps found while building this.
 
 ## How it talks to Pratu
 
-All calls happen **server-side** through Pratu's *API flows*, which return an
-opaque `session_token` instead of setting cookies. The token lives in this app's
-own HttpOnly cookie and never reaches client JavaScript.
-
-The alternative — *browser flows* — needs your UI and Pratu on the same
-hostname behind a reverse proxy, because Pratu's cookies are host-scoped and it
-supports no CORS. API flows avoid that entirely.
+Entirely through **browser flows**: the browser calls Pratu directly, on the
+same origin, and the session is an HttpOnly `pratu_session` cookie that no
+script can read. The Next.js server never touches the auth API — every route
+builds as static.
 
 ```
-browser ──form POST──▶ server action ──X-Session-Token──▶ Pratu
+browser ──fetch (same-origin, cookies + CSRF)──▶ Caddy ──▶ Pratu
+                                                  └─────▶ Next.js (the shell)
 ```
 
-Three things worth knowing before you read the code:
+Four things worth knowing before you read the code:
 
-- Pratu selects the tenant from the **Host header**, and Node's `fetch` silently
-  drops a manually set `Host`. The tenant hostname has to be the real URL.
+- **One origin is mandatory.** Pratu's cookies are host-scoped to the tenant and
+  the server has no CORS, so a reverse proxy fronts both. Open the app at
+  `acme.pratu.localhost:8080`, never `localhost`.
+- **There are two CSRF scopes.** Flow submissions send `csrf_token` in the body;
+  session-scoped calls (logout, MFA) send the token from `whoami` in an
+  `X-CSRF-Token` header.
 - A **403 on login is not a failure** — it is how "password accepted, now prove
   your second factor" is expressed.
 - **v0.3.1 has no passwordless phone login.** SMS is a second factor; login
@@ -83,11 +82,12 @@ Three things worth knowing before you read the code:
 
 ```
 apps/web/src/
-├── lib/pratu/     client, typed endpoints, session + flow cookies
-├── app/actions.ts server actions — the state machine of every flow
+├── lib/pratu/     transport, typed endpoints, useFlow / useSession
+├── components/    UI plus the shared second-factor step
 └── app/…          one directory per screen
 
-docker-compose.yml   postgres + pratu v0.3.1 + this app
+Caddyfile            puts the app and Pratu on one origin
+docker-compose.yml   postgres + pratu v0.3.1 + this app + caddy
 docker/devdb/        creates the unprivileged role Pratu requires
 apps/web/Dockerfile  standalone Next.js build
 ```

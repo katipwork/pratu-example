@@ -1,10 +1,8 @@
-import "server-only";
-
-import { request, requestRaw } from "./client";
+import { api } from "./client";
 import type {
   AuthResult,
   Flow,
-  HeldLogin,
+  FlowKind,
   RecoveryCodeResult,
   SentResult,
   SmsEnrollment,
@@ -13,300 +11,216 @@ import type {
 } from "./types";
 
 /**
- * Thin, typed wrappers over the Pratu public API (v0.3.1).
+ * Typed wrappers over Pratu's browser-flow API (v0.3.1).
  *
- * Everything here uses **API flows** (`/api` creation endpoints): the server
- * returns an opaque `session_token` and no CSRF is involved. The alternative —
- * browser flows — requires the UI to be served from the tenant hostname behind
- * a reverse proxy, since Pratu sets host-scoped cookies and supports no CORS.
+ * Flow submissions carry the flow's `csrf_token` in the body. Session-scoped
+ * calls carry the session CSRF token in an `X-CSRF-Token` header instead.
  */
+
+const csrfHeader = (token: string) => ({ "X-CSRF-Token": token });
+
+// ---------------------------------------------------------------------------
+// Flow lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a browser flow. This sets the CSRF cookie, so it must run in the
+ * browser — a server-side fetch would capture the cookie on the server.
+ */
+export const createFlow = (kind: FlowKind, schema?: string) =>
+  api<Flow>(
+    "GET",
+    `/self-service/${kind}/browser${schema ? `?schema=${encodeURIComponent(schema)}` : ""}`,
+  );
+
+/**
+ * Re-reads a flow the browser already owns: the step it waits on, the fields
+ * to render, the second factors available, and messages from the last
+ * submission. Readable only by the browser whose CSRF cookie created it.
+ */
+export const readFlow = (id: string) =>
+  api<Flow>("GET", `/self-service/flows/${id}`);
 
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
-/** Creates a registration flow. `schema` picks a named Identity Schema. */
-export function createRegistrationFlow(schema?: string): Promise<Flow> {
-  return request<Flow>("/self-service/registration/api", {
-    method: "POST",
-    query: { schema },
-  });
-}
-
-/**
- * Submits registration. Under the default `required` verification policy the
- * session is withheld and the result carries `state: "verification_required"`
- * plus the spawned verification flow.
- */
-export function submitRegistration(
+export const submitRegistration = (
   flow: string,
+  csrf: string,
   traits: Record<string, unknown>,
   password: string,
-): Promise<AuthResult> {
-  return request<AuthResult>("/self-service/registration", {
-    method: "POST",
-    query: { flow },
-    body: { method: "password", traits, password },
+) =>
+  api<AuthResult>("POST", `/self-service/registration?flow=${flow}`, {
+    method: "password",
+    traits,
+    password,
+    csrf_token: csrf,
   });
-}
 
 // ---------------------------------------------------------------------------
 // Login
 // ---------------------------------------------------------------------------
 
-export function createLoginFlow(): Promise<Flow> {
-  return request<Flow>("/self-service/login/api", { method: "POST" });
-}
-
 /**
- * Submits a password login.
- *
- * A 403 is not a failure here: it means the login is *held* pending another
- * step — address verification, or a second factor. The caller inspects
- * `held.state` to decide which screen comes next.
+ * Submits a password login. A 403 is part of the happy path: it carries
+ * `state: "verification_required"` or `state: "mfa_required"`.
  */
-export async function submitLogin(
+export const submitLogin = (
   flow: string,
+  csrf: string,
   identifier: string,
   password: string,
-): Promise<
-  { kind: "success"; result: AuthResult } | { kind: "held"; held: HeldLogin }
-> {
-  const response = await requestRaw<AuthResult | HeldLogin>(
-    "/self-service/login",
-    {
-      method: "POST",
-      query: { flow },
-      body: { method: "password", identifier, password },
-    },
-  );
-
-  if (response.ok) {
-    return { kind: "success", result: response.data as AuthResult };
-  }
-  if (response.status === 403) {
-    return { kind: "held", held: response.data as HeldLogin };
-  }
-  const { toError } = await import("./client");
-  throw toError(response.status, response.data);
-}
-
-/** Completes a held login with a TOTP code; yields an aal2 session. */
-export function submitLoginTotp(
-  flow: string,
-  code: string,
-): Promise<AuthResult> {
-  return request<AuthResult>("/self-service/login/totp", {
-    method: "POST",
-    query: { flow },
-    body: { code },
+) =>
+  api<AuthResult>("POST", `/self-service/login?flow=${flow}`, {
+    method: "password",
+    identifier,
+    password,
+    csrf_token: csrf,
   });
-}
 
-/** Sends a one-time code to the identity's enrolled second-factor phone. */
-export function sendLoginSms(flow: string): Promise<SentResult> {
-  return request<SentResult>("/self-service/login/sms/send", {
-    method: "POST",
-    query: { flow },
-    body: {},
+export const submitLoginTotp = (flow: string, csrf: string, code: string) =>
+  api<AuthResult>("POST", `/self-service/login/totp?flow=${flow}`, {
+    code,
+    csrf_token: csrf,
   });
-}
 
-/** Completes a held login with the SMS code; yields an aal2 session. */
-export function submitLoginSms(
-  flow: string,
-  code: string,
-): Promise<AuthResult> {
-  return request<AuthResult>("/self-service/login/sms", {
-    method: "POST",
-    query: { flow },
-    body: { code },
+/** Mobile OTP step 1 — text a code to the enrolled second-factor phone. */
+export const sendLoginSms = (flow: string, csrf: string) =>
+  api<SentResult>("POST", `/self-service/login/sms/send?flow=${flow}`, {
+    csrf_token: csrf,
   });
-}
+
+/** Mobile OTP step 2 — prove the code; the session becomes aal2. */
+export const submitLoginSms = (flow: string, csrf: string, code: string) =>
+  api<AuthResult>("POST", `/self-service/login/sms?flow=${flow}`, {
+    code,
+    csrf_token: csrf,
+  });
 
 // ---------------------------------------------------------------------------
 // Verification
 // ---------------------------------------------------------------------------
 
-/**
- * Proves an address with its one-time code. Five wrong attempts invalidate the
- * code. When the flow was spawned by a session-withholding registration or
- * login, success issues the session.
- */
-export function submitVerification(
-  flow: string,
-  code: string,
-): Promise<AuthResult> {
-  return request<AuthResult>("/self-service/verification", {
-    method: "POST",
-    query: { flow },
-    body: { code },
+export const submitVerification = (flow: string, csrf: string, code: string) =>
+  api<AuthResult>("POST", `/self-service/verification?flow=${flow}`, {
+    code,
+    csrf_token: csrf,
   });
-}
 
-export function resendVerification(flow: string): Promise<SentResult> {
-  return request<SentResult>("/self-service/verification/resend", {
-    method: "POST",
-    query: { flow },
-    body: {},
+export const resendVerification = (flow: string, csrf: string) =>
+  api<SentResult>("POST", `/self-service/verification/resend?flow=${flow}`, {
+    csrf_token: csrf,
   });
-}
 
 // ---------------------------------------------------------------------------
 // Recovery
 // ---------------------------------------------------------------------------
 
-export function createRecoveryFlow(): Promise<Flow> {
-  return request<Flow>("/self-service/recovery/api", { method: "POST" });
-}
-
-/**
- * Submits the recovery address. Anti-enumeration by design: the response is
- * identical whether or not the address exists, so the UI must never imply that
- * an account was found.
- */
-export function submitRecoveryAddress(
+export const submitRecoveryAddress = (
   flow: string,
+  csrf: string,
   address: string,
-): Promise<{ state: "code_sent"; message?: string }> {
-  return request("/self-service/recovery", {
-    method: "POST",
-    query: { flow },
-    body: { address },
-  });
-}
+) =>
+  api<{ state: "code_sent"; message?: string }>(
+    "POST",
+    `/self-service/recovery?flow=${flow}`,
+    { address, csrf_token: csrf },
+  );
 
-/**
- * Proves the recovery code. Recovery never bypasses MFA, so the next step is
- * either `set_password` or `second_factor_required`.
- */
-export function submitRecoveryCode(
+export const submitRecoveryCode = (flow: string, csrf: string, code: string) =>
+  api<RecoveryCodeResult>("POST", `/self-service/recovery/code?flow=${flow}`, {
+    code,
+    csrf_token: csrf,
+  });
+
+export const submitRecoveryTotp = (flow: string, csrf: string, code: string) =>
+  api<{ state: "set_password" }>(
+    "POST",
+    `/self-service/recovery/totp?flow=${flow}`,
+    { code, csrf_token: csrf },
+  );
+
+export const sendRecoverySms = (flow: string, csrf: string) =>
+  api<SentResult>("POST", `/self-service/recovery/sms/send?flow=${flow}`, {
+    csrf_token: csrf,
+  });
+
+export const submitRecoverySms = (flow: string, csrf: string, code: string) =>
+  api<{ state: "set_password" }>(
+    "POST",
+    `/self-service/recovery/sms?flow=${flow}`,
+    { code, csrf_token: csrf },
+  );
+
+export const submitRecoveryPassword = (
   flow: string,
-  code: string,
-): Promise<RecoveryCodeResult> {
-  return request<RecoveryCodeResult>("/self-service/recovery/code", {
-    method: "POST",
-    query: { flow },
-    body: { code },
-  });
-}
-
-export function submitRecoveryTotp(
-  flow: string,
-  code: string,
-): Promise<{ state: "set_password" }> {
-  return request("/self-service/recovery/totp", {
-    method: "POST",
-    query: { flow },
-    body: { code },
-  });
-}
-
-export function sendRecoverySms(flow: string): Promise<SentResult> {
-  return request<SentResult>("/self-service/recovery/sms/send", {
-    method: "POST",
-    query: { flow },
-    body: {},
-  });
-}
-
-export function submitRecoverySms(
-  flow: string,
-  code: string,
-): Promise<{ state: "set_password" }> {
-  return request("/self-service/recovery/sms", {
-    method: "POST",
-    query: { flow },
-    body: { code },
-  });
-}
-
-/**
- * Sets the new password and completes recovery. The server replaces the
- * password credential, marks the recovery address verified, revokes every
- * other session, and issues a fresh one.
- */
-export function submitRecoveryPassword(
-  flow: string,
+  csrf: string,
   password: string,
-): Promise<AuthResult> {
-  return request<AuthResult>("/self-service/recovery/password", {
-    method: "POST",
-    query: { flow },
-    body: { password },
+) =>
+  api<AuthResult>("POST", `/self-service/recovery/password?flow=${flow}`, {
+    password,
+    csrf_token: csrf,
   });
-}
-
-// ---------------------------------------------------------------------------
-// MFA management (requires a session)
-// ---------------------------------------------------------------------------
-
-/** Starts TOTP enrolment; the secret stays pending until a code proves it. */
-export function enrollTotp(sessionToken: string): Promise<TotpEnrollment> {
-  return request<TotpEnrollment>("/self-service/mfa/totp/enroll", {
-    method: "POST",
-    sessionToken,
-  });
-}
-
-/** Activates the pending TOTP enrolment and raises the session to aal2. */
-export function confirmTotp(
-  sessionToken: string,
-  flow: string,
-  code: string,
-): Promise<{ state: "enrolled" }> {
-  return request("/self-service/mfa/totp/confirm", {
-    method: "POST",
-    query: { flow },
-    body: { code },
-    sessionToken,
-  });
-}
-
-/** Removes the TOTP factor. Requires an aal2 session. */
-export function unenrollTotp(sessionToken: string): Promise<unknown> {
-  return request("/self-service/mfa/totp", { method: "DELETE", sessionToken });
-}
-
-/** Starts SMS second-factor enrolment; `phone` is international format. */
-export function enrollSms(
-  sessionToken: string,
-  phone: string,
-): Promise<SmsEnrollment> {
-  return request<SmsEnrollment>("/self-service/mfa/sms/enroll", {
-    method: "POST",
-    body: { phone },
-    sessionToken,
-  });
-}
-
-/** Activates the pending SMS enrolment and raises the session to aal2. */
-export function confirmSms(
-  sessionToken: string,
-  flow: string,
-  code: string,
-): Promise<{ state: "enrolled" }> {
-  return request("/self-service/mfa/sms/confirm", {
-    method: "POST",
-    query: { flow },
-    body: { code },
-    sessionToken,
-  });
-}
-
-/** Removes the SMS factor. Requires an aal2 session. */
-export function unenrollSms(sessionToken: string): Promise<unknown> {
-  return request("/self-service/mfa/sms", { method: "DELETE", sessionToken });
-}
 
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
 
-export function whoami(sessionToken: string): Promise<WhoAmI> {
-  return request<WhoAmI>("/sessions/whoami", { sessionToken });
-}
+/** Also the source of the session-scope CSRF token. */
+export const whoami = () => api<WhoAmI>("GET", "/sessions/whoami");
 
-export function logout(sessionToken: string): Promise<unknown> {
-  return request("/self-service/logout", { method: "POST", sessionToken });
-}
+export const logout = (sessionCsrf: string) =>
+  api("POST", "/self-service/logout", undefined, csrfHeader(sessionCsrf));
+
+// ---------------------------------------------------------------------------
+// MFA management (session-scoped, so header CSRF)
+// ---------------------------------------------------------------------------
+
+export const enrollTotp = (sessionCsrf: string) =>
+  api<TotpEnrollment>(
+    "POST",
+    "/self-service/mfa/totp/enroll",
+    undefined,
+    csrfHeader(sessionCsrf),
+  );
+
+export const confirmTotp = (
+  flow: string,
+  code: string,
+  flowCsrf: string,
+  sessionCsrf: string,
+) =>
+  api<{ state: "enrolled" }>(
+    "POST",
+    `/self-service/mfa/totp/confirm?flow=${flow}`,
+    { code, csrf_token: flowCsrf },
+    csrfHeader(sessionCsrf),
+  );
+
+export const unenrollTotp = (sessionCsrf: string) =>
+  api("DELETE", "/self-service/mfa/totp", undefined, csrfHeader(sessionCsrf));
+
+export const enrollSms = (phone: string, sessionCsrf: string) =>
+  api<SmsEnrollment>(
+    "POST",
+    "/self-service/mfa/sms/enroll",
+    { phone },
+    csrfHeader(sessionCsrf),
+  );
+
+export const confirmSms = (
+  flow: string,
+  code: string,
+  flowCsrf: string,
+  sessionCsrf: string,
+) =>
+  api<{ state: "enrolled" }>(
+    "POST",
+    `/self-service/mfa/sms/confirm?flow=${flow}`,
+    { code, csrf_token: flowCsrf },
+    csrfHeader(sessionCsrf),
+  );
+
+export const unenrollSms = (sessionCsrf: string) =>
+  api("DELETE", "/self-service/mfa/sms", undefined, csrfHeader(sessionCsrf));

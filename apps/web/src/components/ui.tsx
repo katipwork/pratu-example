@@ -1,9 +1,23 @@
 "use client";
 
-import { useFormStatus } from "react-dom";
-import type { ReactNode } from "react";
+import type { FormEvent, ReactNode } from "react";
 
-import type { FormState } from "@/lib/form-state";
+import type { FlowMessage } from "@/lib/pratu/types";
+
+/** What a screen is currently telling the user. */
+export type Notice = { kind: "error" | "ok"; text: string } | null;
+
+/** Turns the messages a flow carries back from a redirect into a Notice. */
+export function noticeFromFlow(messages?: FlowMessage[]): Notice {
+  const message = messages?.[0];
+  if (!message) return null;
+  return {
+    kind: message.type === "error" ? "error" : "ok",
+    text: message.details?.length
+      ? `${message.text}: ${message.details.join("; ")}`
+      : message.text,
+  };
+}
 
 export function Card({
   title,
@@ -27,6 +41,19 @@ export function Card({
   );
 }
 
+export function Alert({ notice }: { notice: Notice }) {
+  if (!notice) return null;
+  const styles =
+    notice.kind === "error"
+      ? "border-red-600/30 bg-red-600/10 text-red-800 dark:text-red-300"
+      : "border-green-600/30 bg-green-600/10 text-green-800 dark:text-green-300";
+  return (
+    <p className={`mb-4 rounded-lg border px-3 py-2 text-sm ${styles}`}>
+      {notice.text}
+    </p>
+  );
+}
+
 export function Field({
   name,
   label,
@@ -34,7 +61,6 @@ export function Field({
   required,
   autoComplete,
   placeholder,
-  defaultValue,
 }: {
   name: string;
   label: string;
@@ -42,7 +68,6 @@ export function Field({
   required?: boolean;
   autoComplete?: string;
   placeholder?: string;
-  defaultValue?: string;
 }) {
   return (
     <label className="block">
@@ -53,14 +78,13 @@ export function Field({
         required={required}
         autoComplete={autoComplete}
         placeholder={placeholder}
-        defaultValue={defaultValue}
         className="w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm outline-none focus:border-black/40 dark:border-white/20 dark:bg-neutral-950 dark:focus:border-white/50"
       />
     </label>
   );
 }
 
-/** A one-time-code input: numeric, 6 digits, with the right autofill hint. */
+/** A one-time-code input: numeric, with the autofill hint phones look for. */
 export function CodeField({ label = "Code" }: { label?: string }) {
   return (
     <label className="block">
@@ -78,22 +102,27 @@ export function CodeField({ label = "Code" }: { label?: string }) {
   );
 }
 
-export function SubmitButton({
+export function Button({
   children,
+  pending,
   variant = "primary",
+  type = "submit",
+  onClick,
 }: {
   children: ReactNode;
+  pending?: boolean;
   variant?: "primary" | "ghost";
+  type?: "submit" | "button";
+  onClick?: () => void;
 }) {
-  const { pending } = useFormStatus();
   const styles =
     variant === "primary"
       ? "bg-neutral-900 text-white hover:bg-neutral-700 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
       : "border border-black/15 hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10";
-
   return (
     <button
-      type="submit"
+      type={type}
+      onClick={onClick}
       disabled={pending}
       className={`w-full rounded-lg px-4 py-2.5 text-sm font-medium transition disabled:opacity-50 ${styles}`}
     >
@@ -102,25 +131,21 @@ export function SubmitButton({
   );
 }
 
-export function Alert({ state }: { state: FormState }) {
-  if (state.notice) {
-    return (
-      <p className="mb-4 rounded-lg border border-green-600/30 bg-green-600/10 px-3 py-2 text-sm text-green-800 dark:text-green-300">
-        {state.notice}
-      </p>
-    );
-  }
-  if (!state.error) return null;
+/** Placeholder shown while a flow is being created or re-read. */
+export function Loading() {
   return (
-    <div className="mb-4 rounded-lg border border-red-600/30 bg-red-600/10 px-3 py-2 text-sm text-red-800 dark:text-red-300">
-      <p>{state.error}</p>
-      {state.details?.length ? (
-        <ul className="mt-1 list-inside list-disc text-xs opacity-90">
-          {state.details.map((detail) => (
-            <li key={detail}>{detail}</li>
-          ))}
-        </ul>
-      ) : null}
+    <div className="w-full max-w-md rounded-2xl border border-black/10 bg-white p-8 dark:border-white/15 dark:bg-neutral-900">
+      <div className="h-6 w-40 animate-pulse rounded bg-black/10 dark:bg-white/10" />
+      <div className="mt-6 space-y-3">
+        <div className="h-10 animate-pulse rounded bg-black/5 dark:bg-white/5" />
+        <div className="h-10 animate-pulse rounded bg-black/5 dark:bg-white/5" />
+      </div>
     </div>
   );
+}
+
+/** Reads a form's fields without needing controlled inputs. */
+export function formValues(event: FormEvent<HTMLFormElement>) {
+  const data = new FormData(event.currentTarget);
+  return (name: string) => String(data.get(name) ?? "");
 }

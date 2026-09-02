@@ -1,21 +1,50 @@
-import { redirect } from "next/navigation";
+"use client";
+
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 
-import { logoutAction, unenrollAction } from "@/app/actions";
-import { currentUser } from "@/lib/pratu/session";
+import * as pratu from "@/lib/pratu/api";
+import { errorText } from "@/lib/pratu/client";
+import { useSession } from "@/lib/pratu/use-session";
+import { Alert, Button, Loading, type Notice } from "@/components/ui";
 
-export const dynamic = "force-dynamic";
+function DashboardScreen() {
+  const { session, loading, reload } = useSession();
+  const [notice, setNotice] = useState<Notice>(null);
+  const [pending, setPending] = useState(false);
+  const router = useRouter();
+  const enrolled = useSearchParams().get("enrolled");
 
-export default async function DashboardPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ enrolled?: string }>;
-}) {
-  const { enrolled } = await searchParams;
-  const user = await currentUser();
-  if (!user) redirect("/login");
+  useEffect(() => {
+    if (!loading && !session) router.replace("/login");
+  }, [loading, session, router]);
 
-  const { session, identity } = user;
+  if (loading || !session) return <Loading />;
+
+  const { session: current, identity, csrf_token: sessionCsrf = "" } = session;
+
+  async function signOut() {
+    setPending(true);
+    await pratu.logout(sessionCsrf);
+    router.push("/login");
+  }
+
+  async function unenroll(factor: "totp" | "sms") {
+    setPending(true);
+    setNotice(null);
+    // Both need an aal2 session; Pratu answers 403 otherwise.
+    const result =
+      factor === "totp"
+        ? await pratu.unenrollTotp(sessionCsrf)
+        : await pratu.unenrollSms(sessionCsrf);
+    setPending(false);
+    if (!result.ok) {
+      return setNotice({ kind: "error", text: errorText(result) });
+    }
+    setNotice({ kind: "ok", text: `Removed the ${factor} factor.` });
+    reload();
+  }
 
   return (
     <div className="w-full max-w-2xl rounded-2xl border border-black/10 bg-white p-8 shadow-sm dark:border-white/15 dark:bg-neutral-900">
@@ -26,20 +55,28 @@ export default async function DashboardPage({
             Session data straight from <code>GET /sessions/whoami</code>.
           </p>
         </div>
-        <form action={logoutAction}>
-          <button className="rounded-lg border border-black/15 px-3 py-1.5 text-sm hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10">
+        <div className="w-32">
+          <Button variant="ghost" type="button" onClick={signOut} pending={pending}>
             Sign out
-          </button>
-        </form>
+          </Button>
+        </div>
       </div>
 
-      {enrolled ? (
-        <p className="mt-4 rounded-lg border border-green-600/30 bg-green-600/10 px-3 py-2 text-sm text-green-800 dark:text-green-300">
-          {enrolled === "totp" ? "Authenticator app" : "SMS"} enrolled.
-        </p>
-      ) : null}
+      <div className="mt-4">
+        <Alert
+          notice={
+            notice ??
+            (enrolled
+              ? {
+                  kind: "ok",
+                  text: `${enrolled === "totp" ? "Authenticator app" : "SMS"} enrolled.`,
+                }
+              : null)
+          }
+        />
+      </div>
 
-      <dl className="mt-6 grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
+      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
         <dt className="font-medium text-neutral-500">Identity</dt>
         <dd className="font-mono text-xs break-all">{identity.id}</dd>
 
@@ -47,15 +84,15 @@ export default async function DashboardPage({
         <dd>
           <span
             className={`rounded px-2 py-0.5 text-xs font-medium ${
-              session.aal === "aal2"
+              current.aal === "aal2"
                 ? "bg-green-600/15 text-green-800 dark:text-green-300"
                 : "bg-amber-500/15 text-amber-800 dark:text-amber-300"
             }`}
           >
-            {session.aal}
+            {current.aal}
           </span>
           <span className="ml-2 text-neutral-500">
-            {session.aal === "aal2"
+            {current.aal === "aal2"
               ? "a second factor was proven"
               : "password only"}
           </span>
@@ -78,15 +115,15 @@ export default async function DashboardPage({
                   <span className="text-xs text-neutral-500">
                     {address.channel}
                   </span>
-                  {address.verified ? (
-                    <span className="text-xs text-green-700 dark:text-green-400">
-                      verified
-                    </span>
-                  ) : (
-                    <span className="text-xs text-amber-700 dark:text-amber-400">
-                      unverified
-                    </span>
-                  )}
+                  <span
+                    className={`text-xs ${
+                      address.verified
+                        ? "text-green-700 dark:text-green-400"
+                        : "text-amber-700 dark:text-amber-400"
+                    }`}
+                  >
+                    {address.verified ? "verified" : "unverified"}
+                  </span>
                 </div>
               ))}
             </dd>
@@ -94,28 +131,36 @@ export default async function DashboardPage({
         ) : null}
       </dl>
 
-      <div className="mt-8 flex flex-wrap gap-3 border-t border-black/10 pt-6 dark:border-white/15">
+      <div className="mt-8 flex flex-wrap items-center gap-3 border-t border-black/10 pt-6 dark:border-white/15">
         <Link
           href="/mfa"
           className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700 dark:bg-white dark:text-neutral-900"
         >
           Manage two-factor
         </Link>
-
-        {/* Removing a factor needs an aal2 session; Pratu answers 403 otherwise. */}
-        <form action={unenrollAction}>
-          <input type="hidden" name="factor" value="totp" />
-          <button className="rounded-lg border border-black/15 px-4 py-2 text-sm hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10">
-            Remove authenticator
-          </button>
-        </form>
-        <form action={unenrollAction}>
-          <input type="hidden" name="factor" value="sms" />
-          <button className="rounded-lg border border-black/15 px-4 py-2 text-sm hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10">
-            Remove SMS
-          </button>
-        </form>
+        <button
+          onClick={() => unenroll("totp")}
+          disabled={pending}
+          className="rounded-lg border border-black/15 px-4 py-2 text-sm hover:bg-black/5 disabled:opacity-50 dark:border-white/20 dark:hover:bg-white/10"
+        >
+          Remove authenticator
+        </button>
+        <button
+          onClick={() => unenroll("sms")}
+          disabled={pending}
+          className="rounded-lg border border-black/15 px-4 py-2 text-sm hover:bg-black/5 disabled:opacity-50 dark:border-white/20 dark:hover:bg-white/10"
+        >
+          Remove SMS
+        </button>
       </div>
     </div>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <DashboardScreen />
+    </Suspense>
   );
 }
