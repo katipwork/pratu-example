@@ -1,6 +1,6 @@
 import "server-only";
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 import type { Flow, WhoAmI } from "./types";
 
@@ -17,17 +17,27 @@ import type { Flow, WhoAmI } from "./types";
  * `X-CSRF-Token` header that a form cannot set.
  */
 
+/** The port Pratu's public API listens on, behind the proxy. */
+const INTERNAL_PORT = process.env.PRATU_INTERNAL_PORT ?? "4433";
+
 /**
- * Where the app server reaches Pratu.
+ * Where the app server reaches Pratu, for the tenant this request belongs to.
  *
- * This must be the **tenant hostname**: Pratu picks the tenant from the Host
- * header and Node's fetch silently drops a manually set one, so the only way
- * to address a tenant is for the hostname to really be in the URL. In Docker a
- * network alias on the pratu service makes it resolve.
+ * Pratu picks the tenant from the Host header and Node's fetch silently drops
+ * a manually set one, so the tenant hostname has to really be in the URL. It
+ * is taken from the incoming request rather than configured, because one
+ * deployment serves several tenants — `acme.pratu.localhost` and
+ * `otp.pratu.localhost` here — and reading a flow against the wrong tenant
+ * simply would not find it.
+ *
+ * In Docker, network aliases on the pratu service make these resolve.
  */
-const INTERNAL_URL = (
-  process.env.PRATU_INTERNAL_URL ?? "http://acme.pratu.localhost:4433"
-).replace(/\/$/, "");
+async function internalOrigin(): Promise<string> {
+  const host = (await headers()).get("host") ?? "";
+  // Strip the browser-facing port; the internal listener uses its own.
+  const hostname = host.replace(/:\d+$/, "");
+  return `http://${hostname}:${INTERNAL_PORT}`;
+}
 
 /** Passes the browser's Pratu cookies through to the API. */
 async function forwardedCookies(): Promise<string> {
@@ -39,12 +49,24 @@ async function forwardedCookies(): Promise<string> {
     .join("; ");
 }
 
+/**
+ * Whether the browser is keeping Pratu's cookies at all.
+ *
+ * Screens use this to tell two failures apart when a flow will not load. A
+ * flow that expired can simply be replaced with a fresh one; a browser that
+ * stores no cookies never will, and redirecting it to flow creation again
+ * loops forever — the flow is bound to the CSRF cookie it never kept.
+ */
+export async function hasPratuCookies(): Promise<boolean> {
+  return (await forwardedCookies()) !== "";
+}
+
 async function get<T>(path: string): Promise<T | null> {
   const cookie = await forwardedCookies();
   if (!cookie) return null;
 
   try {
-    const response = await fetch(`${INTERNAL_URL}${path}`, {
+    const response = await fetch(`${await internalOrigin()}${path}`, {
       headers: { Accept: "application/json", Cookie: cookie },
       cache: "no-store",
     });
@@ -87,7 +109,7 @@ export async function sessionCall(
   };
   if (init.body !== undefined) headers["Content-Type"] = "application/json";
 
-  const response = await fetch(`${INTERNAL_URL}${path}`, {
+  const response = await fetch(`${await internalOrigin()}${path}`, {
     method: init.method,
     headers,
     body: init.body === undefined ? undefined : JSON.stringify(init.body),

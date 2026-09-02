@@ -17,7 +17,11 @@ export function SecondFactor({
   flow: Flow;
   scope: "login" | "recovery";
 }) {
-  const methods: MfaMethod[] = flow.ui?.methods ?? [];
+  // `ui.methods` carries first factors at `choose_method` and second factors
+  // once the flow is held, so narrow rather than assume.
+  const methods = (flow.ui?.methods ?? []).filter(
+    (method): method is MfaMethod => method === "totp" || method === "sms",
+  );
   const hasTotp = methods.includes("totp");
   const hasSms = methods.includes("sms");
   const base = `/self-service/${scope}`;

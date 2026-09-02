@@ -2,7 +2,7 @@
 
 Every request below is same-origin against the tenant
 (`http://acme.pratu.localhost:8080`, the proxy). All of these were exercised
-against a real Pratu v0.3.1 server; the responses shown are actual output.
+against a real Pratu v0.4.0 server; the responses shown are actual output.
 
 These are **browser flows**, so:
 
@@ -151,11 +151,8 @@ password ──▶ 403 {state:"mfa_required", methods:["sms"]}
          ──▶ POST /login/sms {code}      {"state":"active","aal":"aal2"}
 ```
 
-> **There is no passwordless "log in with your phone number" flow in v0.3.1.**
-> The login submit accepts `method: "password"` only. SMS is a *second* factor
-> for an already-enrolled identity. (Passwordless identities exist, but only as
-> a by-product of social sign-in.) If you need phone-first login, it has to be
-> built server-side or added upstream.
+> This is SMS as a **second** factor. For SMS as the *only* factor, see
+> [Passwordless](#7-passwordless-first-factor) below — added in v0.4.0.
 
 **Send caps** (`internal/server/limits.go`): 1 send per address per **minute**,
 then 5/day for SMS and 20/day for email, plus a per-tenant daily SMS ceiling
@@ -242,7 +239,7 @@ one.
 Phone numbers are international format (`+66812345678`), and are stored
 encrypted at rest.
 
-Note that v0.3.1 has **no endpoint to list enrolled factors**. A settings screen
+Note that v0.4.0 has **no endpoint to list enrolled factors**. A settings screen
 can only discover them from a `409` on re-enrolment, or from `methods` on a held
 login.
 
@@ -279,3 +276,63 @@ POST /self-service/logout   (X-CSRF-Token)
 
 `whoami` is the only way to read the session, since `pratu_session` is HttpOnly,
 and it is where the session-scope CSRF token comes from.
+
+---
+
+## 7. Passwordless first factor
+
+Added in v0.4.0 ([ADR 0007](https://github.com/katipwork/pratu/blob/main/docs/adr/0007-passwordless-first-factor.md)).
+Opt in per tenant:
+
+```json
+PATCH /admin/tenants/{slug}   { "first_factor": ["code"] }
+```
+
+`["password"]` (the default), `["code"]`, or `["password","code"]`. The flow
+then advertises what it takes, and the UI follows:
+
+| `first_factor` | login `ui.fields` | login `ui.methods` | registration `ui.fields` |
+|---|---|---|---|
+| `["password"]` | identifier, password | `["password"]` | traits, password |
+| `["code"]` | identifier | `["code"]` | traits |
+| `["password","code"]` | identifier, password | `["password","code"]` | traits, password |
+
+### Registration
+
+```jsonc
+// POST /self-service/registration?flow=…
+{ "method": "code",
+  "traits": { "phone": "+66812804275" },
+  "csrf_token": "…" }          // no password — sending one is rejected
+```
+
+The identifier trait must itself be a verification-annotated Address. The
+session is withheld until that Address is proven **even under
+`verification: deferred`** — an unproven address would leave no credential at
+all.
+
+### Login
+
+```
+POST /self-service/login/code/send?flow={id}  {identifier, csrf_token}
+     → {"state":"code_sent","message":"if the identifier exists, a code was sent to it"}
+
+POST /self-service/login/code?flow={id}       {code, csrf_token}
+     → {"state":"active", session:{aal:"aal1"}}
+```
+
+The send endpoint doubles as resend, and its answer is uniform — for an unknown
+identifier **and** when a delivery cap refused the send, so it is no
+enumeration oracle. Observed live: a send inside the 60-second per-address
+cooldown still answers `code_sent`, and no message is delivered.
+
+After the send the login flow moves to `state: "code_required"` and `ui.fields`
+becomes `[code]`, which is what lets one screen render both steps.
+
+Proving the code marks the Address verified, so a code login never detours into
+a Verification step. A code login is `aal1` — one factor is one factor — so an
+enrolled second factor is still owed on top, and the `403 mfa_required` branch
+works exactly as it does after a password.
+
+Courier template: `login_code` (distinct from `verification_code` and
+`mfa_code`).

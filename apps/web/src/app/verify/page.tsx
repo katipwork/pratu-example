@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-import { readFlow } from "@/lib/pratu/server";
+import { hasPratuCookies, readFlow } from "@/lib/pratu/server";
 import { Button, Card, CodeField, FlowForm, Messages } from "@/components/ui";
 
 /**
@@ -18,7 +18,9 @@ export default async function VerifyPage({
   if (!flowId) redirect("/login");
 
   const flow = await readFlow(flowId);
-  if (!flow) redirect("/login");
+  if (!flow) {
+    redirect((await hasPratuCookies()) ? "/login" : "/error?code=cookies_blocked");
+  }
 
   return (
     <Card title="Check your inbox" subtitle="We sent you a one-time code.">

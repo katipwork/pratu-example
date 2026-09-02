@@ -1,6 +1,6 @@
 # Architecture
 
-How this example talks to [Pratu](https://github.com/katipwork/pratu) v0.3.1,
+How this example talks to [Pratu](https://github.com/katipwork/pratu) v0.4.0,
 and why it is wired the way it is.
 
 ## The tenant is the hostname
@@ -206,7 +206,7 @@ is just a `<form method="POST">` with the CSRF token as a hidden input.
   `"email"`, so the HTML input type comes from the trait's role.
 - **A 403 on login is the happy path** when it carries `mfa_required` or
   `verification_required`.
-- **No "list my enrolled factors" endpoint** exists in v0.3.1. `whoami` returns
+- **No "list my enrolled factors" endpoint** exists in v0.4.0. `whoami` returns
   the session and identity only. You learn what is enrolled from `methods` on a
   held login, or from a `409` when enrolling again.
 - **Configure the tenant's `ui` block or nothing redirects.** With it empty,
@@ -234,5 +234,5 @@ Two things that bite:
   with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`.
 
 Pratu is built straight from the pinned tag
-(`context: https://github.com/katipwork/pratu.git#v0.3.1`), so the compose file
+(`context: https://github.com/katipwork/pratu.git#v0.4.0`), so the compose file
 cannot drift from the version this UI was written against.

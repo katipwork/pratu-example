@@ -1,7 +1,7 @@
 # Running this example
 
-You need a Pratu v0.3.1 server with one tenant, and this Next.js app pointed at
-it. Either let Docker do all of it, or run the two halves yourself.
+You need a Pratu v0.4.0 server with its tenants configured, and this Next.js app
+pointed at it. Either let Docker do all of it, or run the two halves yourself.
 
 ## Option A — Docker Compose (everything at once)
 
@@ -9,12 +9,13 @@ it. Either let Docker do all of it, or run the two halves yourself.
 docker compose up --build
 ```
 
-That builds Pratu from the pinned tag, migrates, starts it, creates the `acme`
-tenant, and serves the UI:
+That builds Pratu from the pinned tag, migrates, starts it, creates both demo
+tenants, and serves them:
 
 | | |
 |---|---|
-| **App + auth API (one origin)** | <http://acme.pratu.localhost:8080> |
+| **Password tenant** | <http://acme.pratu.localhost:8080> |
+| **Passwordless tenant** | <http://otp.pratu.localhost:8080> |
 | **Mailbox** (one-time codes) | <http://localhost:8025> |
 | Admin API | <http://localhost:4434> (`Authorization: Bearer devroot`) |
 
@@ -43,10 +44,11 @@ Prefer the log? Set `PRATU_COURIER_DRIVER=log` and read
 
 Four details worth knowing about the compose file:
 
-- **`bootstrap` configures the tenant's screens.** The `ui` block it sends
+- **`bootstrap` configures each tenant's screens.** The `ui` block it sends
   (`login_url`, `registration_url`, …) is what makes browser flows
   redirect-driven; with it empty Pratu has nowhere to send an HTML client and
-  answers JSON instead.
+  answers JSON instead. It also gives the `otp` tenant `first_factor: ["code"]`
+  and a phone-only Identity Schema.
 
 - **Caddy is the only web port you use.** It puts the app and Pratu on one
   origin, which browser flows require: the cookies are host-scoped to the
@@ -69,7 +71,7 @@ docker compose down -v
 
 ```bash
 git clone https://github.com/katipwork/pratu
-cd pratu && git checkout v0.3.1
+cd pratu && git checkout v0.4.0
 cp pratu.example.yaml pratu.yaml
 ```
 

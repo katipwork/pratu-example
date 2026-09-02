@@ -1,5 +1,5 @@
 /**
- * Wire types for the Pratu public API (v0.3.1).
+ * Wire types for the Pratu public API (v0.4.0).
  * Mirrors api/public.openapi.yaml — keep in sync with the server contract.
  */
 
@@ -13,6 +13,12 @@ export type FlowState =
   | "password_required";
 
 export type MfaMethod = "totp" | "sms";
+
+/**
+ * First factors a tenant accepts, from `first_factor` (ADR 0007).
+ * A flow advertises its own through `ui.methods`.
+ */
+export type FirstFactor = "password" | "code";
 
 export interface UiField {
   name: string;
@@ -37,7 +43,11 @@ export interface Flow {
   csrf_token?: string;
   ui?: {
     fields?: UiField[];
-    methods?: MfaMethod[];
+    /**
+     * What the flow can be continued with: first factors on a login or
+     * registration flow at `choose_method`, second factors once held.
+     */
+    methods?: (MfaMethod | FirstFactor)[];
   };
 }
 

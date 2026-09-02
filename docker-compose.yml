@@ -1,9 +1,10 @@
-# Full stack: Postgres, Pratu v0.3.1, and this Next.js UI.
+# Full stack: Postgres, Pratu v0.4.0, and this Next.js UI.
 #
 #   docker compose up --build
-#   → UI     http://localhost:3000
-#   → Pratu  http://acme.pratu.localhost:4433
-#   → admin  http://localhost:4434
+#   → password      http://acme.pratu.localhost:8080
+#   → passwordless   http://otp.pratu.localhost:8080
+#   → codes          http://localhost:8025
+#   → admin          http://localhost:4434
 #
 # One-time codes print to the Pratu log (dev courier):
 #   docker compose logs -f pratu | grep courier
@@ -44,10 +45,10 @@ services:
   # One-shot: brings the schema up to date, then exits.
   migrate:
     build: &pratu-build
-      context: https://github.com/katipwork/pratu.git#v0.3.1
+      context: https://github.com/katipwork/pratu.git#v0.4.0
       args:
-        VERSION: v0.3.1
-    image: pratu:v0.3.1
+        VERSION: v0.4.0
+    image: pratu:v0.4.0
     command: ["migrate"]
     environment: *pratu-env
     depends_on:
@@ -57,7 +58,7 @@ services:
 
   pratu:
     build: *pratu-build
-    image: pratu:v0.3.1
+    image: pratu:v0.4.0
     command: ["serve"]
     environment: *pratu-env
     ports:
@@ -68,8 +69,10 @@ services:
         aliases:
           # The app reads flows server-side, and the tenant comes from the Host
           # header — which Node's fetch cannot set. Reaching Pratu *by the
-          # tenant hostname* makes the Host correct without any override.
-          - ${PRATU_TENANT_HOST:-acme.pratu.localhost}
+          # tenant hostname* makes the Host correct without any override, so
+          # every tenant hostname needs to resolve in here.
+          - ${PRATU_TENANT_SLUG:-acme}.${PRATU_BASE_DOMAIN:-pratu.localhost}
+          - ${PRATU_OTP_SLUG:-otp}.${PRATU_BASE_DOMAIN:-pratu.localhost}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -82,40 +85,18 @@ services:
       retries: 30
       start_period: 3s
 
-  # One-shot: creates the demo tenant. Idempotent — an existing slug is fine.
-  #
-  # The `ui` block is what turns browser flows into redirect-driven ones: with
-  # no screens configured Pratu has nowhere to send an HTML client, so it falls
-  # back to answering JSON and the 303 path is never exercised.
+  # One-shot: creates both demo tenants and the passwordless Identity Schema.
   bootstrap:
     image: curlimages/curl:8.11.1
+    volumes:
+      - ./docker/bootstrap/bootstrap.sh:/bootstrap.sh:ro
     environment:
-      SLUG: ${PRATU_TENANT_SLUG:-acme}
       ROOT_KEY: ${PRATU_ADMIN_ROOT_KEY:-devroot}
-      ORIGIN: http://${PRATU_TENANT_HOST:-acme.pratu.localhost}:${APP_PORT:-8080}
-    entrypoint: ["sh", "-c"]
-    command:
-      - |
-        body=$$(cat <<JSON
-        { "slug": "$$SLUG", "name": "Acme Inc",
-          "ui": {
-            "login_url":          "$$ORIGIN/login",
-            "registration_url":   "$$ORIGIN/register",
-            "recovery_url":       "$$ORIGIN/recovery",
-            "verification_url":   "$$ORIGIN/verify",
-            "error_url":          "$$ORIGIN/error",
-            "default_return_url": "$$ORIGIN/dashboard"
-          } }
-        JSON
-        )
-        code=$$(curl -s -o /tmp/out -w '%{http_code}' -X POST http://pratu:4434/admin/tenants \
-          -H "Authorization: Bearer $$ROOT_KEY" -H 'Content-Type: application/json' -d "$$body")
-        cat /tmp/out; echo
-        case "$$code" in
-          2*) echo "tenant $$SLUG created with screens at $$ORIGIN" ;;
-          409) echo "tenant $$SLUG already exists" ;;
-          *)  echo "failed to create tenant (HTTP $$code)"; exit 1 ;;
-        esac
+      BASE_DOMAIN: ${PRATU_BASE_DOMAIN:-pratu.localhost}
+      APP_PORT: ${APP_PORT:-8080}
+      ACME_SLUG: ${PRATU_TENANT_SLUG:-acme}
+      OTP_SLUG: ${PRATU_OTP_SLUG:-otp}
+    entrypoint: ["sh", "/bootstrap.sh"]
     depends_on:
       pratu:
         condition: service_healthy
@@ -127,9 +108,10 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
     environment:
-      # Screens read their flow server-side. Must be the tenant hostname (see
-      # the alias on the pratu service), never the service name.
-      PRATU_INTERNAL_URL: http://${PRATU_TENANT_HOST:-acme.pratu.localhost}:4433
+      # Screens read their flow server-side, against the tenant hostname of the
+      # incoming request (see the aliases on the pratu service). Only the port
+      # is configured; the host comes from the request.
+      PRATU_INTERNAL_PORT: "4433"
     depends_on:
       bootstrap:
         condition: service_completed_successfully

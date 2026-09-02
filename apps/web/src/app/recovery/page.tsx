@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { readFlow } from "@/lib/pratu/server";
+import { hasPratuCookies, readFlow } from "@/lib/pratu/server";
 import { Button, Card, CodeField, Field, FlowForm, Messages } from "@/components/ui";
 import { SecondFactor } from "@/components/second-factor";
 
@@ -21,7 +21,16 @@ export default async function RecoveryPage({
   if (!flowId) redirect("/self-service/recovery/browser");
 
   const flow = await readFlow(flowId);
-  if (!flow) redirect("/self-service/recovery/browser");
+  if (!flow) {
+    // A flow that merely expired can be replaced. A browser that keeps no
+    // cookies never gets a readable one, so sending it back to flow creation
+    // would loop forever.
+    redirect(
+      (await hasPratuCookies())
+        ? "/self-service/recovery/browser"
+        : "/error?code=cookies_blocked",
+    );
+  }
 
   const action = (path: string) => `/self-service/recovery${path}?flow=${flow.id}`;
 

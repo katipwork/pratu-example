@@ -15,6 +15,11 @@ const REASONS: Record<string, string> = {
   rate_limited: "Too many attempts. Try again in a moment.",
   unknown_schema: "That sign-up form is not available.",
   internal_error: "Something went wrong on our side.",
+  // Not a Pratu code: this screen raises it when a flow cannot be read and no
+  // Pratu cookie came back, which is the one failure that cannot be retried.
+  cookies_blocked:
+    "Your browser is not keeping our cookies, so signing in cannot continue. " +
+    "Allow cookies for this site and try again.",
 };
 
 export default async function ErrorPage({
