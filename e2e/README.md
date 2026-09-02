@@ -1,8 +1,9 @@
 # End-to-end tests
 
 Two Playwright scripts that drive the real UI against a real Pratu v0.3.1
-server. They read one-time codes out of the server log, so Pratu must be running
-with `courier.driver: log`.
+server. They read one-time codes from the dev mailbox, so Pratu must be running
+with `courier.driver: webhook` pointed at it — which is what `docker compose up`
+sets up.
 
 ```bash
 npm i playwright        # or pnpm add -w playwright
@@ -13,7 +14,7 @@ node e2e/totp-recovery.mjs
 | Variable | Default | Meaning |
 |---|---|---|
 | `BASE_URL` | `http://acme.pratu.localhost:8080` | the proxied origin (**not** localhost) |
-| `PRATU_LOG` | `/tmp/pratu-server.log` | Pratu's stdout, for reading codes |
+| `MAILBOX_URL` | `http://localhost:8025` | dev mailbox holding the one-time codes |
 
 **mobile-otp.mjs** — register → verify email → assert the session is a
 HttpOnly `pratu_session` cookie → enrol SMS second factor → sign out → password

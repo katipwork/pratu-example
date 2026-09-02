@@ -26,12 +26,11 @@ docker compose up --build
 ```
 
 Builds Pratu from the pinned tag, migrates, creates the `acme` tenant and serves
-everything on one origin at <http://acme.pratu.localhost:8080>. One-time codes
-go to the Pratu log:
+everything on one origin at <http://acme.pratu.localhost:8080>.
 
-```bash
-docker compose logs -f pratu | grep courier
-```
+Pratu sends no mail or SMS of its own, so one-time codes land in a small dev
+mailbox at <http://localhost:8025> — leave it open while you click through a
+flow and click a code to copy it.
 
 Or run against your own Pratu server. The app needs no configuration — it calls
 Pratu on relative paths — but it must share an origin with it, so run the
@@ -86,10 +85,11 @@ apps/web/src/
 ├── components/    UI plus the shared second-factor step
 └── app/…          one directory per screen
 
-Caddyfile            puts the app and Pratu on one origin
-docker-compose.yml   postgres + pratu v0.3.1 + this app + caddy
-docker/devdb/        creates the unprivileged role Pratu requires
-apps/web/Dockerfile  standalone Next.js build
+Caddyfile             puts the app and Pratu on one origin
+docker-compose.yml    postgres + pratu v0.3.1 + app + caddy + mailbox
+docker/courier/       dev mailbox: catches courier webhooks, shows the codes
+docker/devdb/         creates the unprivileged role Pratu requires
+apps/web/Dockerfile   standalone Next.js build
 ```
 
 This is a pnpm workspace (`apps/*`, `packages/*`) with Turborepo, so a second

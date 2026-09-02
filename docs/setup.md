@@ -15,26 +15,31 @@ tenant, and serves the UI:
 | | |
 |---|---|
 | **App + auth API (one origin)** | <http://acme.pratu.localhost:8080> |
+| **Mailbox** (one-time codes) | <http://localhost:8025> |
 | Admin API | <http://localhost:4434> (`Authorization: Bearer devroot`) |
 
 **Use the tenant hostname, not `localhost`.** Browser flows put the session and
 CSRF cookies on `acme.pratu.localhost`, and the API has no CORS — opening the
 app on `localhost:8080` gives you a UI that cannot sign anyone in.
 
-A cold start from an empty volume takes about ten seconds. Read one-time codes
-from the Pratu log:
+A cold start from an empty volume takes about ten seconds.
 
-```bash
-docker compose logs -f pratu | grep courier
-```
+**One-time codes appear at <http://localhost:8025>.** Pratu ships no mail or SMS
+sender, so the stack runs the courier's `webhook` driver and a small mailbox
+service catches every message. Leave the page open while you click through a
+flow; codes show up within a couple of seconds and copy on click.
 
 Override anything in `.env` (see `.env.example`) — ports collide often:
 
 ```bash
 APP_PORT=8080
+MAILBOX_PORT=8025
 PRATU_PUBLIC_PORT=4533
 PRATU_ADMIN_PORT=4534
 ```
+
+Prefer the log? Set `PRATU_COURIER_DRIVER=log` and read
+`docker compose logs -f pratu | grep courier` instead.
 
 Three details worth knowing about the compose file:
 
@@ -126,10 +131,17 @@ put the app on a different origin from the cookies.
 
 ### 4. Read the one-time codes
 
-The dev courier is `driver: log`, so codes are printed rather than delivered:
+**Pratu never sends anything itself.** It has no SMTP client and no SMS gateway;
+the courier only has two drivers:
+
+| driver | behaviour |
+|---|---|
+| `log` | prints the message, code included, to stdout |
+| `webhook` | POSTs the message as JSON to `courier.webhook_url` |
+
+Simplest is `driver: log` (the default in `pratu.example.yaml`):
 
 ```bash
-# whatever terminal `make run` is in, or:
 grep -oE '"code":"[0-9]+"' server.log | tail -1
 ```
 
@@ -138,6 +150,22 @@ grep -oE '"code":"[0-9]+"' server.log | tail -1
  "recipient":"nid@example.com","template":"verification_code",
  "payload":{"code":"685628","tenant":"Acme Inc"}}
 ```
+
+Nicer is the mailbox this repo ships — the same one Docker Compose runs:
+
+```bash
+node docker/courier/server.mjs        # serves :8025
+```
+
+then point Pratu at it:
+
+```yaml
+courier:
+  driver: webhook
+  webhook_url: http://localhost:8025/courier
+```
+
+Open <http://localhost:8025> and codes appear as they are issued.
 
 ## Walking every flow
 
@@ -197,9 +225,15 @@ required. Session-scoped calls (logout, MFA) need the *other* token, from
 
 **`429` on a code send** — the per-address minute cooldown. Wait it out.
 
-**Recovery asks for a code that never arrives** — almost always the same
-cooldown, hidden by anti-enumeration. Check the server log for a
-`"template":"recovery_code"` line; if there is none, a cap suppressed it.
+**No code arrives at a real inbox** — none ever will. Pratu has no mail sender;
+with `driver: log` the code only reaches the server log, and with `driver:
+webhook` it only reaches whatever catches the POST (here, the mailbox at
+:8025). Registering with your real address changes nothing.
+
+**Recovery asks for a code that never arrives** — if nothing shows up in the
+mailbox at all, it is almost always the per-address cooldown, hidden by
+anti-enumeration. Look for a `recovery_code` message; if there is none, a cap
+suppressed the send.
 
 **Codes appear in the log a little late** — the courier is an outbox drained on
 a ticker, so a code lands a second or two after the request returns (longer if

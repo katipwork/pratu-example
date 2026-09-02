@@ -1,28 +1,33 @@
 import { chromium } from "playwright";
-import { execSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 
 // Must be the tenant origin: browser flows are cookie- and same-origin-bound.
 const BASE = process.env.BASE_URL ?? "http://acme.pratu.localhost:8080";
+// The dev mailbox that catches Pratu's courier webhooks.
+const MAILBOX = process.env.MAILBOX_URL ?? "http://localhost:8025";
 const EMAIL = `rec${Date.now()}@example.com`;
 const PASSWORD = "correct-horse-battery-staple";
 const NEWPASS = "totally-different-passphrase-77";
-const LOG = process.env.PRATU_LOG ?? "/tmp/pratu-server.log";
 
-const used = new Set();
+const seen = new Set();
 
 const codeFor = async (recipient, template, { timeout = 90000 } = {}) => {
+  // The courier is an outbox drained on a ticker, so a message lands a moment
+  // after the request returns. Match on recipient *and* template: one address
+  // receives verification, recovery and MFA codes during a single run.
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    const line = execSync(
-      `grep '"recipient":"${recipient}"' ${LOG} | grep '"template":"${template}"' | tail -1 || true`,
-    )
-      .toString()
-      .trim();
-    const m = line.match(/"code":"(\d+)"/);
-    if (m && !used.has(m[1] + template)) {
-      used.add(m[1] + template);
-      return m[1];
+    const messages = await (await fetch(`${MAILBOX}/api/messages`)).json();
+    const hit = messages.find(
+      (m) =>
+        m.recipient === recipient &&
+        m.template === template &&
+        m.code &&
+        !seen.has(m.id),
+    );
+    if (hit) {
+      seen.add(hit.id);
+      return hit.code;
     }
     await new Promise((r) => setTimeout(r, 500));
   }

@@ -17,8 +17,11 @@ x-pratu-env: &pratu-env
   # 32+ chars each. Encrypts TOTP secrets, second-factor phones and signing keys.
   PRATU_ENCRYPTION_KEYS: ${PRATU_ENCRYPTION_KEYS:-dev-encryption-key-that-is-32-chars-long!!}
   PRATU_OAUTH2_SYSTEM_SECRET: ${PRATU_OAUTH2_SYSTEM_SECRET:-dev-oauth2-system-secret-32-chars-min!!}
-  # "log" prints one-time codes to stdout. Never use in production.
-  PRATU_COURIER_DRIVER: log
+  # Pratu ships no mail or SMS sender. "webhook" POSTs each message as JSON
+  # and leaves delivery to you; the mailbox service below catches them and
+  # shows the codes on a page. Set to "log" to print them to stdout instead.
+  PRATU_COURIER_DRIVER: ${PRATU_COURIER_DRIVER:-webhook}
+  PRATU_COURIER_WEBHOOK_URL: http://mailbox:8025/courier
 
 services:
   postgres:
@@ -63,6 +66,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      mailbox:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4433/health/ready"]
       interval: 2s
@@ -103,6 +108,21 @@ services:
     depends_on:
       bootstrap:
         condition: service_completed_successfully
+
+  # Catches courier webhooks and shows the one-time codes on a page. Dev only:
+  # it displays live codes to anyone who can reach it.
+  mailbox:
+    image: node:22-alpine
+    volumes:
+      - ./docker/courier/server.mjs:/app/server.mjs:ro
+    command: ["node", "/app/server.mjs"]
+    ports:
+      - "${MAILBOX_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8025/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
 
   # The single origin the browser uses. Without it, browser flows cannot work:
   # the session and CSRF cookies are host-scoped to the tenant and there is no
