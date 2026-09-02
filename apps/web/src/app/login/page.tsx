@@ -5,8 +5,6 @@ import { readFlow } from "@/lib/pratu/server";
 import { Button, Card, Field, FlowForm, Messages } from "@/components/ui";
 import { SecondFactor } from "@/components/second-factor";
 
-export const dynamic = "force-dynamic";
-
 /**
  * The tenant's login screen, named in `ui.login_url`.
  *

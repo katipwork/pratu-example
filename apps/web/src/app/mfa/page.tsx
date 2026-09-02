@@ -12,8 +12,6 @@ import {
 } from "@/app/actions";
 import { Button, Card, CodeField, Field, Messages } from "@/components/ui";
 
-export const dynamic = "force-dynamic";
-
 /** Pending enrolment lives in a cookie, so the two steps need no client state. */
 interface Pending {
   kind: "totp" | "sms";

@@ -5,8 +5,6 @@ import { readFlow } from "@/lib/pratu/server";
 import { Button, Card, CodeField, Field, FlowForm, Messages } from "@/components/ui";
 import { SecondFactor } from "@/components/second-factor";
 
-export const dynamic = "force-dynamic";
-
 /**
  * The tenant's recovery screen (`ui.recovery_url`).
  *

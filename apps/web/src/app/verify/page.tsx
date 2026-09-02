@@ -3,8 +3,6 @@ import { redirect } from "next/navigation";
 import { readFlow } from "@/lib/pratu/server";
 import { Button, Card, CodeField, FlowForm, Messages } from "@/components/ui";
 
-export const dynamic = "force-dynamic";
-
 /**
  * The tenant's verification screen (`ui.verification_url`).
  *

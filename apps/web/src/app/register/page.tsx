@@ -4,8 +4,6 @@ import { redirect } from "next/navigation";
 import { readFlow } from "@/lib/pratu/server";
 import { Button, Card, Field, FlowForm, Messages } from "@/components/ui";
 
-export const dynamic = "force-dynamic";
-
 export default async function RegisterPage({
   searchParams,
 }: {

@@ -2,8 +2,6 @@ import Link from "next/link";
 
 import { whoami } from "@/lib/pratu/server";
 
-export const dynamic = "force-dynamic";
-
 const flows = [
   {
     href: "/register",

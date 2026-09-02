@@ -86,7 +86,10 @@ So `PRATU_INTERNAL_URL` is `http://acme.pratu.localhost:4433`, resolved inside
 Docker by a network alias on the pratu service.
 
 Every route renders on demand (`ƒ`); nothing is prerendered, and no client
-component ships.
+component ships. That happens on its own — reading `cookies()` or
+`searchParams` opts a route out of static rendering, so no
+`export const dynamic = "force-dynamic"` is needed. The fetches in
+`server.ts` pass `cache: "no-store"` so an auth call is never reused.
 
 ## Two CSRF scopes — and why one needs a server action
 

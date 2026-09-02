@@ -2,8 +2,6 @@ import Link from "next/link";
 
 import { Card } from "@/components/ui";
 
-export const dynamic = "force-dynamic";
-
 /**
  * The tenant's error screen (`ui.error_url`).
  *
