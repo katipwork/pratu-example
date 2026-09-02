@@ -1,23 +1,13 @@
-"use client";
-
-import type { FormEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import type { FlowMessage } from "@/lib/pratu/types";
 
-/** What a screen is currently telling the user. */
-export type Notice = { kind: "error" | "ok"; text: string } | null;
-
-/** Turns the messages a flow carries back from a redirect into a Notice. */
-export function noticeFromFlow(messages?: FlowMessage[]): Notice {
-  const message = messages?.[0];
-  if (!message) return null;
-  return {
-    kind: message.type === "error" ? "error" : "ok",
-    text: message.details?.length
-      ? `${message.text}: ${message.details.join("; ")}`
-      : message.text,
-  };
-}
+/**
+ * Presentation only — no "use client" anywhere in this file.
+ *
+ * Every screen is server-rendered and every form is a real HTML form, so these
+ * are plain elements with no handlers. The app works with JavaScript disabled.
+ */
 
 export function Card({
   title,
@@ -41,16 +31,40 @@ export function Card({
   );
 }
 
-export function Alert({ notice }: { notice: Notice }) {
-  if (!notice) return null;
-  const styles =
-    notice.kind === "error"
-      ? "border-red-600/30 bg-red-600/10 text-red-800 dark:text-red-300"
-      : "border-green-600/30 bg-green-600/10 text-green-800 dark:text-green-300";
+/** Renders whatever a flow carried back from a redirect. */
+export function Messages({
+  messages,
+  extra,
+}: {
+  messages?: FlowMessage[];
+  extra?: { kind: "error" | "ok"; text: string } | null;
+}) {
+  const notices = [
+    ...(extra ? [extra] : []),
+    ...(messages ?? []).map((message) => ({
+      kind: message.type === "error" ? ("error" as const) : ("ok" as const),
+      text: message.details?.length
+        ? `${message.text}: ${message.details.join("; ")}`
+        : message.text,
+    })),
+  ];
+  if (!notices.length) return null;
+
   return (
-    <p className={`mb-4 rounded-lg border px-3 py-2 text-sm ${styles}`}>
-      {notice.text}
-    </p>
+    <div className="mb-4 space-y-2">
+      {notices.map((notice, index) => (
+        <p
+          key={index}
+          className={`rounded-lg border px-3 py-2 text-sm ${
+            notice.kind === "error"
+              ? "border-red-600/30 bg-red-600/10 text-red-800 dark:text-red-300"
+              : "border-green-600/30 bg-green-600/10 text-green-800 dark:text-green-300"
+          }`}
+        >
+          {notice.text}
+        </p>
+      ))}
+    </div>
   );
 }
 
@@ -61,6 +75,7 @@ export function Field({
   required,
   autoComplete,
   placeholder,
+  hint,
 }: {
   name: string;
   label: string;
@@ -68,6 +83,7 @@ export function Field({
   required?: boolean;
   autoComplete?: string;
   placeholder?: string;
+  hint?: string;
 }) {
   return (
     <label className="block">
@@ -80,6 +96,9 @@ export function Field({
         placeholder={placeholder}
         className="w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm outline-none focus:border-black/40 dark:border-white/20 dark:bg-neutral-950 dark:focus:border-white/50"
       />
+      {hint ? (
+        <span className="mt-1 block text-xs text-neutral-500">{hint}</span>
+      ) : null}
     </label>
   );
 }
@@ -96,6 +115,7 @@ export function CodeField({ label = "Code" }: { label?: string }) {
         pattern="[0-9]*"
         maxLength={8}
         required
+        autoFocus
         className="w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-center font-mono text-lg tracking-[0.4em] outline-none focus:border-black/40 dark:border-white/20 dark:bg-neutral-950 dark:focus:border-white/50"
       />
     </label>
@@ -104,16 +124,10 @@ export function CodeField({ label = "Code" }: { label?: string }) {
 
 export function Button({
   children,
-  pending,
   variant = "primary",
-  type = "submit",
-  onClick,
 }: {
   children: ReactNode;
-  pending?: boolean;
   variant?: "primary" | "ghost";
-  type?: "submit" | "button";
-  onClick?: () => void;
 }) {
   const styles =
     variant === "primary"
@@ -121,31 +135,34 @@ export function Button({
       : "border border-black/15 hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10";
   return (
     <button
-      type={type}
-      onClick={onClick}
-      disabled={pending}
-      className={`w-full rounded-lg px-4 py-2.5 text-sm font-medium transition disabled:opacity-50 ${styles}`}
+      type="submit"
+      className={`w-full rounded-lg px-4 py-2.5 text-sm font-medium transition ${styles}`}
     >
-      {pending ? "Working…" : children}
+      {children}
     </button>
   );
 }
 
-/** Placeholder shown while a flow is being created or re-read. */
-export function Loading() {
+/**
+ * A form that submits straight to Pratu.
+ *
+ * The browser posts `application/x-www-form-urlencoded`, which Pratu treats as
+ * an HTML client by construction: it answers 303 back to the tenant's screen
+ * instead of JSON. The flow-scope CSRF token rides along as a hidden field.
+ */
+export function FlowForm({
+  action,
+  csrf,
+  children,
+}: {
+  action: string;
+  csrf?: string;
+  children: ReactNode;
+}) {
   return (
-    <div className="w-full max-w-md rounded-2xl border border-black/10 bg-white p-8 dark:border-white/15 dark:bg-neutral-900">
-      <div className="h-6 w-40 animate-pulse rounded bg-black/10 dark:bg-white/10" />
-      <div className="mt-6 space-y-3">
-        <div className="h-10 animate-pulse rounded bg-black/5 dark:bg-white/5" />
-        <div className="h-10 animate-pulse rounded bg-black/5 dark:bg-white/5" />
-      </div>
-    </div>
+    <form method="POST" action={action} className="space-y-4">
+      <input type="hidden" name="csrf_token" value={csrf ?? ""} />
+      {children}
+    </form>
   );
-}
-
-/** Reads a form's fields without needing controlled inputs. */
-export function formValues(event: FormEvent<HTMLFormElement>) {
-  const data = new FormData(event.currentTarget);
-  return (name: string) => String(data.get(name) ?? "");
 }

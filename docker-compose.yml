@@ -63,6 +63,13 @@ services:
     ports:
       - "${PRATU_PUBLIC_PORT:-4433}:4433"
       - "${PRATU_ADMIN_PORT:-4434}:4434"
+    networks:
+      default:
+        aliases:
+          # The app reads flows server-side, and the tenant comes from the Host
+          # header — which Node's fetch cannot set. Reaching Pratu *by the
+          # tenant hostname* makes the Host correct without any override.
+          - ${PRATU_TENANT_HOST:-acme.pratu.localhost}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -76,20 +83,36 @@ services:
       start_period: 3s
 
   # One-shot: creates the demo tenant. Idempotent — an existing slug is fine.
+  #
+  # The `ui` block is what turns browser flows into redirect-driven ones: with
+  # no screens configured Pratu has nowhere to send an HTML client, so it falls
+  # back to answering JSON and the 303 path is never exercised.
   bootstrap:
     image: curlimages/curl:8.11.1
     environment:
       SLUG: ${PRATU_TENANT_SLUG:-acme}
       ROOT_KEY: ${PRATU_ADMIN_ROOT_KEY:-devroot}
+      ORIGIN: http://${PRATU_TENANT_HOST:-acme.pratu.localhost}:${APP_PORT:-8080}
     entrypoint: ["sh", "-c"]
     command:
       - |
+        body=$$(cat <<JSON
+        { "slug": "$$SLUG", "name": "Acme Inc",
+          "ui": {
+            "login_url":          "$$ORIGIN/login",
+            "registration_url":   "$$ORIGIN/register",
+            "recovery_url":       "$$ORIGIN/recovery",
+            "verification_url":   "$$ORIGIN/verify",
+            "error_url":          "$$ORIGIN/error",
+            "default_return_url": "$$ORIGIN/dashboard"
+          } }
+        JSON
+        )
         code=$$(curl -s -o /tmp/out -w '%{http_code}' -X POST http://pratu:4434/admin/tenants \
-          -H "Authorization: Bearer $$ROOT_KEY" -H 'Content-Type: application/json' \
-          -d "{\"slug\":\"$$SLUG\",\"name\":\"Acme Inc\"}")
+          -H "Authorization: Bearer $$ROOT_KEY" -H 'Content-Type: application/json' -d "$$body")
         cat /tmp/out; echo
         case "$$code" in
-          2*) echo "tenant $$SLUG created" ;;
+          2*) echo "tenant $$SLUG created with screens at $$ORIGIN" ;;
           409) echo "tenant $$SLUG already exists" ;;
           *)  echo "failed to create tenant (HTTP $$code)"; exit 1 ;;
         esac
@@ -103,8 +126,10 @@ services:
       # Root context: the Dockerfile needs the whole pnpm workspace.
       context: .
       dockerfile: apps/web/Dockerfile
-    # No Pratu URL here: the browser talks to Pratu directly, same-origin
-    # through Caddy. The app server never calls the auth API.
+    environment:
+      # Screens read their flow server-side. Must be the tenant hostname (see
+      # the alias on the pratu service), never the service name.
+      PRATU_INTERNAL_URL: http://${PRATU_TENANT_HOST:-acme.pratu.localhost}:4433
     depends_on:
       bootstrap:
         condition: service_completed_successfully

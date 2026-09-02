@@ -11,8 +11,16 @@ These are **browser flows**, so:
 - Success sets the `pratu_session` cookie and returns **no** `session_token`.
 - Session-scoped calls (logout, MFA management) carry the token from `whoami`
   in an `X-CSRF-Token` **header** instead.
-- Send `Accept: application/json`, or a browser flow answers an
-  HTML-preferring client with 303 redirects to the tenant's own screens.
+
+**The JSON below is what a JSON client sees.** This app is not one: it posts
+`application/x-www-form-urlencoded`, which Pratu treats as an HTML client, so
+each response is a `303` back to the tenant's screen instead — the outcome is
+carried by the flow's `state` and `messages` rather than the body. Same
+endpoints, same tokens, different envelope. See
+[architecture.md](architecture.md#the-redirect-loop).
+
+In form posts, traits nest by name: `traits.email=…` rather than a `traits`
+object.
 
 Common shapes:
 

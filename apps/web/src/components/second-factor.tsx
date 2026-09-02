@@ -1,82 +1,26 @@
-"use client";
-
-import { useState } from "react";
-
-import * as pratu from "@/lib/pratu/api";
-import { errorText } from "@/lib/pratu/client";
-import type { AuthResult, MfaMethod } from "@/lib/pratu/types";
-import { Alert, Button, Card, CodeField, formValues, type Notice } from "./ui";
+import type { Flow, MfaMethod } from "@/lib/pratu/types";
+import { Button, Card, CodeField, FlowForm, Messages } from "./ui";
 
 /**
- * The second-factor step, shared by login and recovery because Pratu exposes
- * the same shape under both: `/{scope}/totp`, `/{scope}/sms/send`,
- * `/{scope}/sms`. Recovery never bypasses MFA, so this screen appears there
- * too.
+ * The second-factor step, shared by login and recovery — Pratu exposes the
+ * same shape under both, and recovery never bypasses MFA.
  *
- * The flow that was held is still the flow being continued — same id, same
- * flow-scope CSRF token.
+ * Each method gets its own form, because a plain HTML form posts to exactly
+ * one action and there is no JavaScript here to switch between them. Sending
+ * an SMS is its own form for the same reason; Pratu answers it with a 303 back
+ * to this screen.
  */
 export function SecondFactor({
-  flowId,
-  csrf,
-  methods,
+  flow,
   scope,
-  onDone,
 }: {
-  flowId: string;
-  csrf: string;
-  methods: MfaMethod[];
+  flow: Flow;
   scope: "login" | "recovery";
-  onDone: (state?: string) => void;
 }) {
+  const methods: MfaMethod[] = flow.ui?.methods ?? [];
   const hasTotp = methods.includes("totp");
   const hasSms = methods.includes("sms");
-  const [via, setVia] = useState<MfaMethod>(hasTotp ? "totp" : "sms");
-  const [notice, setNotice] = useState<Notice>(null);
-  const [pending, setPending] = useState(false);
-  const [sent, setSent] = useState(false);
-
-  async function sendSms() {
-    setPending(true);
-    setNotice(null);
-    const result =
-      scope === "login"
-        ? await pratu.sendLoginSms(flowId, csrf)
-        : await pratu.sendRecoverySms(flowId, csrf);
-    setPending(false);
-
-    if (!result.ok) {
-      return setNotice({ kind: "error", text: errorText(result) });
-    }
-    setVia("sms");
-    setSent(true);
-    setNotice({
-      kind: "ok",
-      text: `We sent a code to ${result.data.address ?? "your phone"}.`,
-    });
-  }
-
-  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const code = formValues(event)("code");
-    setPending(true);
-    setNotice(null);
-
-    const result =
-      scope === "login"
-        ? via === "totp"
-          ? await pratu.submitLoginTotp(flowId, csrf, code)
-          : await pratu.submitLoginSms(flowId, csrf, code)
-        : via === "totp"
-          ? await pratu.submitRecoveryTotp(flowId, csrf, code)
-          : await pratu.submitRecoverySms(flowId, csrf, code);
-    setPending(false);
-
-    if (!result.ok) {
-      return setNotice({ kind: "error", text: errorText(result) });
-    }
-    onDone((result.data as AuthResult).state);
-  }
+  const base = `/self-service/${scope}`;
 
   return (
     <Card
@@ -87,43 +31,44 @@ export function SecondFactor({
           : "Recovery cannot skip two-factor authentication."
       }
     >
-      <Alert notice={notice} />
+      <Messages messages={flow.messages} />
+
+      {hasTotp ? (
+        <FlowForm action={`${base}/totp?flow=${flow.id}`} csrf={flow.csrf_token}>
+          <CodeField label="Code from your authenticator app" />
+          <Button>Verify</Button>
+        </FlowForm>
+      ) : null}
 
       {hasTotp && hasSms ? (
-        <div className="mb-6 flex gap-2 rounded-lg bg-black/5 p-1 dark:bg-white/10">
-          {(["totp", "sms"] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => setVia(option)}
-              className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                via === option
-                  ? "bg-white shadow-sm dark:bg-neutral-800"
-                  : "opacity-70"
-              }`}
-            >
-              {option === "totp" ? "Authenticator" : "SMS"}
-            </button>
-          ))}
+        <div className="my-6 flex items-center gap-3 text-xs text-neutral-500">
+          <span className="h-px flex-1 bg-black/10 dark:bg-white/15" />
+          or
+          <span className="h-px flex-1 bg-black/10 dark:bg-white/15" />
         </div>
       ) : null}
 
-      <div className="space-y-5">
-        {via === "sms" ? (
-          <Button variant={sent ? "ghost" : "primary"} type="button" onClick={sendSms} pending={pending}>
-            {sent ? "Send another code" : "Text me a code"}
-          </Button>
-        ) : null}
+      {hasSms ? (
+        <div className="space-y-4">
+          <FlowForm
+            action={`${base}/sms/send?flow=${flow.id}`}
+            csrf={flow.csrf_token}
+          >
+            <Button variant="ghost">Text me a code</Button>
+          </FlowForm>
 
-        <form onSubmit={onSubmit} className="space-y-4">
-          <CodeField
-            label={
-              via === "totp" ? "Code from your authenticator app" : "Code from the SMS"
-            }
-          />
-          <Button pending={pending}>Verify</Button>
-        </form>
-      </div>
+          <FlowForm action={`${base}/sms?flow=${flow.id}`} csrf={flow.csrf_token}>
+            <CodeField label="Code from the SMS" />
+            <Button>Verify</Button>
+          </FlowForm>
+        </div>
+      ) : null}
+
+      {!hasTotp && !hasSms ? (
+        <p className="text-sm text-neutral-500">
+          No second factor is available on this account.
+        </p>
+      ) : null}
     </Card>
   );
 }

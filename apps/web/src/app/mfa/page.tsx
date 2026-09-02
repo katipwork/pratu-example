@@ -1,208 +1,68 @@
-"use client";
-
-import { useEffect, useState } from "react";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 
-import * as pratu from "@/lib/pratu/api";
-import { errorText } from "@/lib/pratu/client";
-import { useSession } from "@/lib/pratu/use-session";
+import { whoami } from "@/lib/pratu/server";
 import {
-  Alert,
-  Button,
-  Card,
-  CodeField,
-  Field,
-  Loading,
-  formValues,
-  type Notice,
-} from "@/components/ui";
+  cancelEnrollAction,
+  confirmEnrollAction,
+  enrollSmsAction,
+  enrollTotpAction,
+} from "@/app/actions";
+import { Button, Card, CodeField, Field, Messages } from "@/components/ui";
 
-/**
- * MFA enrolment.
- *
- * These are session-scoped endpoints, not flows, so they authenticate with the
- * `pratu_session` cookie and need the session CSRF token in `X-CSRF-Token`.
- * The enrolment itself still returns a flow id plus its own flow-scope token,
- * which the confirm step echoes in the body.
- *
- * v0.3.1 exposes no "list my enrolled factors" endpoint, so neither tab can
- * show an enrolled tick; re-enrolling answers 409.
- */
-export default function MfaPage() {
-  const { session, loading } = useSession();
-  const [tab, setTab] = useState<"totp" | "sms">("totp");
-  const router = useRouter();
+export const dynamic = "force-dynamic";
 
-  useEffect(() => {
-    if (!loading && !session) router.replace("/login");
-  }, [loading, session, router]);
+/** Pending enrolment lives in a cookie, so the two steps need no client state. */
+interface Pending {
+  kind: "totp" | "sms";
+  flow: string;
+  csrf: string;
+  secret?: string;
+  uri?: string;
+  address?: string;
+}
 
-  if (loading || !session) return <Loading />;
-  const sessionCsrf = session.csrf_token ?? "";
+export default async function MfaPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ step?: string }>;
+}) {
+  const { step } = await searchParams;
+  const session = await whoami();
+  if (!session) redirect("/login");
+
+  const store = await cookies();
+  const error = store.get("pratu_example_error")?.value;
+  const raw = store.get("pratu_example_enroll")?.value;
+  const pending: Pending | null = raw ? JSON.parse(raw) : null;
+
+  if (step === "confirm" && pending) {
+    return <ConfirmStep pending={pending} error={error} />;
+  }
 
   return (
     <Card
       title="Two-factor authentication"
       subtitle="Add a second factor. Enrolling raises this session to aal2."
     >
-      <div className="mb-6 flex gap-2 rounded-lg bg-black/5 p-1 dark:bg-white/10">
-        {(["totp", "sms"] as const).map((option) => (
-          <button
-            key={option}
-            type="button"
-            onClick={() => setTab(option)}
-            className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
-              tab === option
-                ? "bg-white shadow-sm dark:bg-neutral-800"
-                : "opacity-70"
-            }`}
-          >
-            {option === "totp" ? "Authenticator" : "SMS"}
-          </button>
-        ))}
+      <Messages extra={error ? { kind: "error", text: error } : null} />
+
+      {/* v0.3.1 has no endpoint listing enrolled factors, so neither option can
+          show a tick; re-enrolling answers 409. */}
+      <form action={enrollTotpAction} className="space-y-4">
+        <p className="text-sm font-medium">Authenticator app</p>
+        <Button>Set up authenticator app</Button>
+      </form>
+
+      <div className="my-6 flex items-center gap-3 text-xs text-neutral-500">
+        <span className="h-px flex-1 bg-black/10 dark:bg-white/15" />
+        or
+        <span className="h-px flex-1 bg-black/10 dark:bg-white/15" />
       </div>
 
-      {tab === "totp" ? (
-        <TotpEnroll sessionCsrf={sessionCsrf} />
-      ) : (
-        <SmsEnroll sessionCsrf={sessionCsrf} />
-      )}
-    </Card>
-  );
-}
-
-function TotpEnroll({ sessionCsrf }: { sessionCsrf: string }) {
-  const [enrolment, setEnrolment] = useState<{
-    flowId: string;
-    csrf: string;
-    secret: string;
-    qr: string;
-  } | null>(null);
-  const [notice, setNotice] = useState<Notice>(null);
-  const [pending, setPending] = useState(false);
-  const router = useRouter();
-
-  async function begin() {
-    setPending(true);
-    setNotice(null);
-    const result = await pratu.enrollTotp(sessionCsrf);
-    if (!result.ok) {
-      setPending(false);
-      return setNotice({ kind: "error", text: errorText(result) });
-    }
-    // Rendered client-side; `qrcode` ships a browser build.
-    const { toDataURL } = await import("qrcode");
-    setEnrolment({
-      flowId: result.data.flow_id,
-      csrf: result.data.csrf_token ?? "",
-      secret: result.data.secret,
-      qr: await toDataURL(result.data.uri),
-    });
-    setPending(false);
-  }
-
-  async function confirm(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setPending(true);
-    setNotice(null);
-    const result = await pratu.confirmTotp(
-      enrolment!.flowId,
-      formValues(event)("code"),
-      enrolment!.csrf,
-      sessionCsrf,
-    );
-    setPending(false);
-    if (!result.ok) {
-      return setNotice({ kind: "error", text: errorText(result) });
-    }
-    router.push("/dashboard?enrolled=totp");
-  }
-
-  return (
-    <div className="space-y-5">
-      <Alert notice={notice} />
-
-      {!enrolment ? (
-        <Button type="button" onClick={begin} pending={pending}>
-          Set up authenticator app
-        </Button>
-      ) : (
-        <>
-          <div className="flex flex-col items-center gap-3 rounded-lg border border-black/10 p-4 dark:border-white/15">
-            <Image
-              src={enrolment.qr}
-              alt="Scan this QR code with your authenticator app"
-              width={192}
-              height={192}
-              unoptimized
-              className="rounded bg-white p-2"
-            />
-            <p className="text-xs text-neutral-500">
-              Or enter this key manually
-            </p>
-            <code className="break-all rounded bg-black/5 px-2 py-1 text-center font-mono text-xs dark:bg-white/10">
-              {enrolment.secret}
-            </code>
-          </div>
-
-          <form onSubmit={confirm} className="space-y-4">
-            <CodeField label="Enter the 6-digit code to confirm" />
-            <Button pending={pending}>Confirm</Button>
-          </form>
-        </>
-      )}
-    </div>
-  );
-}
-
-function SmsEnroll({ sessionCsrf }: { sessionCsrf: string }) {
-  const [enrolment, setEnrolment] = useState<{
-    flowId: string;
-    csrf: string;
-  } | null>(null);
-  const [notice, setNotice] = useState<Notice>(null);
-  const [pending, setPending] = useState(false);
-  const router = useRouter();
-
-  async function begin(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setPending(true);
-    setNotice(null);
-    const result = await pratu.enrollSms(formValues(event)("phone"), sessionCsrf);
-    setPending(false);
-    if (!result.ok) {
-      return setNotice({ kind: "error", text: errorText(result) });
-    }
-    setEnrolment({
-      flowId: result.data.flow_id,
-      csrf: result.data.csrf_token ?? "",
-    });
-    setNotice({ kind: "ok", text: `We sent a code to ${result.data.address}.` });
-  }
-
-  async function confirm(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setPending(true);
-    setNotice(null);
-    const result = await pratu.confirmSms(
-      enrolment!.flowId,
-      formValues(event)("code"),
-      enrolment!.csrf,
-      sessionCsrf,
-    );
-    setPending(false);
-    if (!result.ok) {
-      return setNotice({ kind: "error", text: errorText(result) });
-    }
-    router.push("/dashboard?enrolled=sms");
-  }
-
-  return (
-    <div className="space-y-5">
-      <Alert notice={notice} />
-
-      <form onSubmit={begin} className="space-y-4">
+      <form action={enrollSmsAction} className="space-y-4">
         <Field
           name="phone"
           label="Mobile number"
@@ -210,21 +70,72 @@ function SmsEnroll({ sessionCsrf }: { sessionCsrf: string }) {
           required
           autoComplete="tel"
           placeholder="+66812345678"
+          hint="International format, including the country code."
         />
-        <p className="text-xs text-neutral-500">
-          International format, including the country code.
-        </p>
-        <Button variant={enrolment ? "ghost" : "primary"} pending={pending}>
-          {enrolment ? "Resend code" : "Send code"}
-        </Button>
+        <Button variant="ghost">Send code</Button>
       </form>
 
-      {enrolment ? (
-        <form onSubmit={confirm} className="space-y-4">
-          <CodeField label="Code from the SMS" />
-          <Button pending={pending}>Confirm</Button>
-        </form>
+      <p className="mt-6 text-center text-sm">
+        <Link href="/dashboard" className="underline">
+          Back
+        </Link>
+      </p>
+    </Card>
+  );
+}
+
+async function ConfirmStep({
+  pending,
+  error,
+}: {
+  pending: Pending;
+  error?: string;
+}) {
+  // Rendered on the server; the QR never needs client JavaScript.
+  let qr: string | null = null;
+  if (pending.kind === "totp" && pending.uri) {
+    const { toDataURL } = await import("qrcode");
+    qr = await toDataURL(pending.uri);
+  }
+
+  return (
+    <Card
+      title={pending.kind === "totp" ? "Scan the QR code" : "Check your phone"}
+      subtitle={
+        pending.kind === "totp"
+          ? "Then enter the six-digit code to finish."
+          : `We sent a code to ${pending.address ?? "your phone"}.`
+      }
+    >
+      <Messages extra={error ? { kind: "error", text: error } : null} />
+
+      {pending.kind === "totp" ? (
+        <div className="mb-5 flex flex-col items-center gap-3 rounded-lg border border-black/10 p-4 dark:border-white/15">
+          {qr ? (
+            <Image
+              src={qr}
+              alt="Scan this QR code with your authenticator app"
+              width={192}
+              height={192}
+              unoptimized
+              className="rounded bg-white p-2"
+            />
+          ) : null}
+          <p className="text-xs text-neutral-500">Or enter this key manually</p>
+          <code className="break-all rounded bg-black/5 px-2 py-1 text-center font-mono text-xs dark:bg-white/10">
+            {pending.secret}
+          </code>
+        </div>
       ) : null}
-    </div>
+
+      <form action={confirmEnrollAction} className="space-y-4">
+        <CodeField label="Confirmation code" />
+        <Button>Confirm</Button>
+      </form>
+
+      <form action={cancelEnrollAction} className="mt-3">
+        <Button variant="ghost">Cancel</Button>
+      </form>
+    </Card>
   );
 }

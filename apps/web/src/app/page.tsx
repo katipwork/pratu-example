@@ -1,8 +1,8 @@
-"use client";
-
 import Link from "next/link";
 
-import { useSession } from "@/lib/pratu/use-session";
+import { whoami } from "@/lib/pratu/server";
+
+export const dynamic = "force-dynamic";
 
 const flows = [
   {
@@ -27,8 +27,8 @@ const flows = [
   },
 ];
 
-export default function Home() {
-  const { session } = useSession();
+export default async function Home() {
+  const session = await whoami();
 
   return (
     <div className="w-full max-w-2xl">
@@ -45,8 +45,9 @@ export default function Home() {
         >
           Pratu v0.3.1
         </a>
-        , driven from the browser with cookies and CSRF — the app and the auth
-        API share one origin.
+        , driven entirely by redirects: plain HTML forms post to the auth API,
+        which sends the browser back to these screens. No JavaScript takes
+        part — try it with scripts disabled.
       </p>
 
       {session ? (

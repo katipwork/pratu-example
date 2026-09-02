@@ -41,7 +41,12 @@ PRATU_ADMIN_PORT=4534
 Prefer the log? Set `PRATU_COURIER_DRIVER=log` and read
 `docker compose logs -f pratu | grep courier` instead.
 
-Three details worth knowing about the compose file:
+Four details worth knowing about the compose file:
+
+- **`bootstrap` configures the tenant's screens.** The `ui` block it sends
+  (`login_url`, `registration_url`, …) is what makes browser flows
+  redirect-driven; with it empty Pratu has nowhere to send an HTML client and
+  answers JSON instead.
 
 - **Caddy is the only web port you use.** It puts the app and Pratu on one
   origin, which browser flows require: the cookies are host-scoped to the

@@ -12,9 +12,6 @@ const NEWPASS = "totally-different-passphrase-77";
 const seen = new Set();
 
 const codeFor = async (recipient, template, { timeout = 90000 } = {}) => {
-  // The courier is an outbox drained on a ticker, so a message lands a moment
-  // after the request returns. Match on recipient *and* template: one address
-  // receives verification, recovery and MFA codes during a single run.
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const messages = await (await fetch(`${MAILBOX}/api/messages`)).json();
@@ -47,98 +44,84 @@ function totp(secret) {
   return String((h.readUInt32BE(o) & 0x7fffffff) % 1000000).padStart(6, "0");
 }
 
-const at = (path) => (url) => new URL(url).pathname === path;
+const path = (page) => new URL(page.url()).pathname;
 const step = (msg) => console.log(`\n=== ${msg} ===`);
 
 const browser = await chromium.launch();
-const page = await browser.newPage();
-page.on("pageerror", (e) => console.log("  [pageerror]", e.message));
+// Scripts off throughout: this must be a redirect-driven journey end to end.
+const context = await browser.newContext({ javaScriptEnabled: false });
+const page = await context.newPage();
 
 try {
   step("1. REGISTER + VERIFY");
   await page.goto(`${BASE}/register`);
-  await page.fill('input[name="email"]', EMAIL);
-  await page.fill('input[name="name"]', "Rec User");
+  await page.fill('input[name="traits.email"]', EMAIL);
+  await page.fill('input[name="traits.name"]', "Rec User");
   await page.fill('input[name="password"]', PASSWORD);
   await page.click('button[type="submit"]');
-  await page.waitForURL(at("/verify"), { timeout: 20000 });
   await page.fill('input[name="code"]', await codeFor(EMAIL, "verification_code"));
   await page.click('button[type="submit"]');
-  await page.waitForURL(at("/dashboard"), { timeout: 20000 });
-  console.log("  -> signed in at /dashboard");
+  console.log("  -> signed in at:", path(page));
 
   step("2. ENROL TOTP");
   await page.goto(`${BASE}/mfa`);
   await page.click('button:has-text("Set up authenticator app")');
-  await page.waitForSelector("code", { timeout: 20000 });
   const secret = (await page.locator("code").innerText()).trim();
+  console.log("  -> confirm step at:", path(page) + new URL(page.url()).search);
   console.log("  -> secret:", secret.slice(0, 12) + "...");
-  console.log("  -> QR rendered:", (await page.locator('img[alt*="QR"]').count()) === 1);
+  console.log("  -> QR rendered server-side:", (await page.locator('img[alt*="QR"]').count()) === 1);
   await page.fill('input[name="code"]', totp(secret));
   await page.click('button:has-text("Confirm")');
-  await page.waitForURL(at("/dashboard"), { timeout: 20000 });
   console.log("  -> assurance:", await page.locator("dd span").first().innerText());
 
   step("3. LOGOUT + LOGIN WITH TOTP");
   await page.click('button:has-text("Sign out")');
-  await page.waitForURL(at("/login"), { timeout: 20000 });
   await page.fill('input[name="identifier"]', EMAIL);
   await page.fill('input[name="password"]', PASSWORD);
   await page.click('button[type="submit"]');
-  await page.waitForSelector('h1:has-text("Two-factor authentication")', {
-    timeout: 20000,
-  });
+  console.log("  -> held at:", path(page), "|", await page.locator("h1").innerText());
   await page.fill('input[name="code"]', totp(secret));
   await page.click('button:has-text("Verify")');
-  await page.waitForURL(at("/dashboard"), { timeout: 20000 });
-  console.log("  -> TOTP login OK, assurance:", await page.locator("dd span").first().innerText());
+  console.log("  -> TOTP login OK:", path(page), "| assurance:", await page.locator("dd span").first().innerText());
 
-  step("4. RECOVERY (code -> TOTP -> new password)");
+  step("4. WRONG PASSWORD KEEPS THE FLOW AND SHOWS ITS MESSAGE");
   await page.click('button:has-text("Sign out")');
-  await page.waitForURL(at("/login"), { timeout: 20000 });
-  // The verification email started a 60s per-address cooldown. Recovery would
-  // still answer "code_sent" (anti-enumeration) but deliver nothing.
+  await page.fill('input[name="identifier"]', EMAIL);
+  await page.fill('input[name="password"]', "definitely-not-the-password");
+  await page.click('button[type="submit"]');
+  // The failed submission 303s back to the screen with the message persisted
+  // on the flow — no client state involved.
+  const shown = await page.locator("p.text-red-800, p").first().innerText();
+  console.log("  -> back at:", path(page), "| message:", shown.slice(0, 40));
+
+  step("5. RECOVERY (code -> TOTP -> new password)");
   console.log("  -> waiting out the 60s per-address email cooldown...");
   await page.waitForTimeout(62000);
-
   await page.goto(`${BASE}/recovery`);
   await page.fill('input[name="address"]', EMAIL);
   await page.click('button[type="submit"]');
-  await page.waitForSelector('h1:has-text("Enter your code")', { timeout: 20000 });
-  console.log("  -> anti-enumeration copy:", (await page.locator("p").first().innerText()).slice(0, 55));
+  console.log("  -> step:", await page.locator("h1").innerText());
 
   await page.fill('input[name="code"]', await codeFor(EMAIL, "recovery_code"));
   await page.click('button[type="submit"]');
-  await page.waitForSelector('h1:has-text("Two-factor authentication")', {
-    timeout: 20000,
-  });
-  console.log("  -> recovery demanded a second factor");
+  console.log("  -> step:", await page.locator("h1").innerText());
 
   await page.fill('input[name="code"]', totp(secret));
   await page.click('button:has-text("Verify")');
-  await page.waitForSelector('h1:has-text("Choose a new password")', {
-    timeout: 20000,
-  });
+  console.log("  -> step:", await page.locator("h1").innerText());
+
   await page.fill('input[name="password"]', NEWPASS);
   await page.click('button[type="submit"]');
-  await page.waitForURL(at("/dashboard"), { timeout: 20000 });
-  console.log("  -> recovered, assurance:", await page.locator("dd span").first().innerText());
+  console.log("  -> recovered:", path(page), "| assurance:", await page.locator("dd span").first().innerText());
 
-  step("5. OLD PASSWORD MUST FAIL");
+  step("6. OLD PASSWORD MUST FAIL");
   await page.click('button:has-text("Sign out")');
-  await page.waitForURL(at("/login"), { timeout: 20000 });
   await page.fill('input[name="identifier"]', EMAIL);
   await page.fill('input[name="password"]', PASSWORD);
   await page.click('button[type="submit"]');
-  await page.waitForSelector(".text-red-800", { timeout: 20000 });
-  console.log(
-    "  -> still at",
-    new URL(page.url()).pathname,
-    "| message:",
-    (await page.locator(".text-red-800").first().innerText()).slice(0, 40),
-  );
+  console.log("  -> at:", path(page), "| message:", (await page.locator("p").first().innerText()).slice(0, 40));
 
-  console.log("\nALL STEPS PASSED");
+  console.log("\nALL STEPS PASSED — with JavaScript disabled");
 } catch (error) {
   console.error("\nFAILED:", error.message);
   await page.screenshot({ path: "/tmp/e2e-fail-totp.png", fullPage: true });

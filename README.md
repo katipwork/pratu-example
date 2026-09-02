@@ -15,9 +15,10 @@ tenant would write its own.
 | **Registration** | `/register` → `/verify` | Fields come from the tenant's Identity Schema |
 | **Login** | `/login` | Branches into verification or a second factor |
 | **Mobile OTP login** | `/login` | Password → SMS one-time code → `aal2`, in place |
-| **2FA** | `/login`, `/mfa` | TOTP with QR enrolment, SMS enrolment |
+| **2FA** | `/login`, `/mfa` | TOTP with server-rendered QR, SMS enrolment |
 | **Recovery** | `/recovery` | Code → second factor → new password, driven by flow state |
 | **Session** | `/dashboard` | `whoami`, assurance level, unenrolment |
+| **Failures** | `/error` | `?code=` landings: expired flow, CSRF, rate limit |
 
 ## Quick start
 
@@ -54,26 +55,34 @@ caddy run --config Caddyfile      # :8080 → app + Pratu, one origin
 
 ## How it talks to Pratu
 
-Entirely through **browser flows**: the browser calls Pratu directly, on the
-same origin, and the session is an HttpOnly `pratu_session` cookie that no
-script can read. The Next.js server never touches the auth API — every route
-builds as static.
+Entirely through **redirect-driven browser flows** — the mode v0.3.0 was built
+around. Plain HTML forms post straight to Pratu, which answers `303` and sends
+the browser back to the tenant's own screens carrying the flow. Screens render
+on the server.
+
+**No JavaScript takes part.** Both end-to-end suites run with scripts disabled.
 
 ```
-browser ──fetch (same-origin, cookies + CSRF)──▶ Caddy ──▶ Pratu
-                                                  └─────▶ Next.js (the shell)
+GET /login  ──307──▶  /self-service/login/browser
+                        └──303──▶  /login?flow=abc   (screen reads the flow)
+
+POST /self-service/login?flow=abc   (urlencoded form)
+   ├─ wrong password ──303──▶ /login?flow=abc  + message on the flow
+   ├─ needs a factor ──303──▶ /login?flow=abc  + state: mfa_required
+   └─ success        ──303──▶ /dashboard
 ```
 
 Four things worth knowing before you read the code:
 
 - **One origin is mandatory.** Pratu's cookies are host-scoped to the tenant and
-  the server has no CORS, so a reverse proxy fronts both. Open the app at
+  the server has no CORS, so Caddy fronts both. Open the app at
   `acme.pratu.localhost:8080`, never `localhost`.
-- **There are two CSRF scopes.** Flow submissions send `csrf_token` in the body;
-  session-scoped calls (logout, MFA) send the token from `whoami` in an
-  `X-CSRF-Token` header.
-- A **403 on login is not a failure** — it is how "password accepted, now prove
-  your second factor" is expressed.
+- **The tenant's `ui` block is load-bearing.** With no screens configured Pratu
+  has nowhere to redirect and quietly answers JSON instead — the `bootstrap`
+  service sets them.
+- **Two CSRF scopes.** Flow submissions carry `csrf_token` as a hidden field;
+  logout and MFA need it in an `X-CSRF-Token` header, which a form cannot set —
+  those go through a server action.
 - **v0.3.1 has no passwordless phone login.** SMS is a second factor; login
   itself is `method: "password"` only.
 

@@ -1,50 +1,28 @@
-"use client";
-
-import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 
-import * as pratu from "@/lib/pratu/api";
-import { errorText } from "@/lib/pratu/client";
-import { useSession } from "@/lib/pratu/use-session";
-import { Alert, Button, Loading, type Notice } from "@/components/ui";
+import { whoami } from "@/lib/pratu/server";
+import { logoutAction, unenrollAction } from "@/app/actions";
+import { Messages } from "@/components/ui";
 
-function DashboardScreen() {
-  const { session, loading, reload } = useSession();
-  const [notice, setNotice] = useState<Notice>(null);
-  const [pending, setPending] = useState(false);
-  const router = useRouter();
-  const enrolled = useSearchParams().get("enrolled");
+export const dynamic = "force-dynamic";
 
-  useEffect(() => {
-    if (!loading && !session) router.replace("/login");
-  }, [loading, session, router]);
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ enrolled?: string; removed?: string }>;
+}) {
+  const { enrolled, removed } = await searchParams;
+  // `default_return_url` sends every completed flow here.
+  const session = await whoami();
+  if (!session) redirect("/login");
 
-  if (loading || !session) return <Loading />;
+  const error = (await cookies()).get("pratu_example_error")?.value;
+  const { session: current, identity } = session;
 
-  const { session: current, identity, csrf_token: sessionCsrf = "" } = session;
-
-  async function signOut() {
-    setPending(true);
-    await pratu.logout(sessionCsrf);
-    router.push("/login");
-  }
-
-  async function unenroll(factor: "totp" | "sms") {
-    setPending(true);
-    setNotice(null);
-    // Both need an aal2 session; Pratu answers 403 otherwise.
-    const result =
-      factor === "totp"
-        ? await pratu.unenrollTotp(sessionCsrf)
-        : await pratu.unenrollSms(sessionCsrf);
-    setPending(false);
-    if (!result.ok) {
-      return setNotice({ kind: "error", text: errorText(result) });
-    }
-    setNotice({ kind: "ok", text: `Removed the ${factor} factor.` });
-    reload();
-  }
+  const label = (factor: string) =>
+    factor === "totp" ? "Authenticator app" : "SMS";
 
   return (
     <div className="w-full max-w-2xl rounded-2xl border border-black/10 bg-white p-8 shadow-sm dark:border-white/15 dark:bg-neutral-900">
@@ -55,28 +33,28 @@ function DashboardScreen() {
             Session data straight from <code>GET /sessions/whoami</code>.
           </p>
         </div>
-        <div className="w-32">
-          <Button variant="ghost" type="button" onClick={signOut} pending={pending}>
+        <form action={logoutAction}>
+          <button className="rounded-lg border border-black/15 px-3 py-1.5 text-sm hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10">
             Sign out
-          </Button>
-        </div>
+          </button>
+        </form>
       </div>
 
       <div className="mt-4">
-        <Alert
-          notice={
-            notice ??
-            (enrolled
-              ? {
-                  kind: "ok",
-                  text: `${enrolled === "totp" ? "Authenticator app" : "SMS"} enrolled.`,
-                }
-              : null)
+        <Messages
+          extra={
+            error
+              ? { kind: "error", text: error }
+              : enrolled
+                ? { kind: "ok", text: `${label(enrolled)} enrolled.` }
+                : removed
+                  ? { kind: "ok", text: `${label(removed)} removed.` }
+                  : null
           }
         />
       </div>
 
-      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
         <dt className="font-medium text-neutral-500">Identity</dt>
         <dd className="font-mono text-xs break-all">{identity.id}</dd>
 
@@ -138,29 +116,17 @@ function DashboardScreen() {
         >
           Manage two-factor
         </Link>
-        <button
-          onClick={() => unenroll("totp")}
-          disabled={pending}
-          className="rounded-lg border border-black/15 px-4 py-2 text-sm hover:bg-black/5 disabled:opacity-50 dark:border-white/20 dark:hover:bg-white/10"
-        >
-          Remove authenticator
-        </button>
-        <button
-          onClick={() => unenroll("sms")}
-          disabled={pending}
-          className="rounded-lg border border-black/15 px-4 py-2 text-sm hover:bg-black/5 disabled:opacity-50 dark:border-white/20 dark:hover:bg-white/10"
-        >
-          Remove SMS
-        </button>
+
+        {/* Removing a factor needs an aal2 session; Pratu answers 403 otherwise. */}
+        {(["totp", "sms"] as const).map((factor) => (
+          <form key={factor} action={unenrollAction}>
+            <input type="hidden" name="factor" value={factor} />
+            <button className="rounded-lg border border-black/15 px-4 py-2 text-sm hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10">
+              Remove {factor === "totp" ? "authenticator" : "SMS"}
+            </button>
+          </form>
+        ))}
       </div>
     </div>
-  );
-}
-
-export default function DashboardPage() {
-  return (
-    <Suspense fallback={<Loading />}>
-      <DashboardScreen />
-    </Suspense>
   );
 }

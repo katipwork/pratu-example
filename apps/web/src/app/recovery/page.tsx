@@ -1,154 +1,71 @@
-"use client";
-
-import { Suspense, useState } from "react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
-import * as pratu from "@/lib/pratu/api";
-import { errorText } from "@/lib/pratu/client";
-import { useAfterAuth, useFlow } from "@/lib/pratu/use-flow";
-import type { AuthResult, Flow, MfaMethod } from "@/lib/pratu/types";
-import {
-  Alert,
-  Button,
-  Card,
-  CodeField,
-  Field,
-  Loading,
-  formValues,
-  noticeFromFlow,
-  type Notice,
-} from "@/components/ui";
+import { readFlow } from "@/lib/pratu/server";
+import { Button, Card, CodeField, Field, FlowForm, Messages } from "@/components/ui";
 import { SecondFactor } from "@/components/second-factor";
 
-type Step = "address" | "code" | "factor" | "password";
+export const dynamic = "force-dynamic";
 
-/** Recovery is one flow with four steps; the flow itself says which is due. */
-function stepOf(flow: Flow): Step {
-  switch (flow.state) {
-    case "code_required":
-      return "code";
-    case "second_factor_required":
-      return "factor";
-    case "password_required":
-      return "password";
-    default:
-      return "address";
-  }
-}
+/**
+ * The tenant's recovery screen (`ui.recovery_url`).
+ *
+ * One screen, four steps. Pratu redirects back here after every submission and
+ * the flow reports which step it now waits on, so nothing has to be remembered
+ * on our side.
+ */
+export default async function RecoveryPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ flow?: string }>;
+}) {
+  const { flow: flowId } = await searchParams;
+  if (!flowId) redirect("/self-service/recovery/browser");
 
-function RecoveryScreen() {
-  const { flow, error } = useFlow("recovery");
-  const [step, setStep] = useState<Step | null>(null);
-  const [methods, setMethods] = useState<MfaMethod[] | null>(null);
-  const [address, setAddress] = useState("");
-  const [notice, setNotice] = useState<Notice>(null);
-  const [pending, setPending] = useState(false);
-  const afterAuth = useAfterAuth();
+  const flow = await readFlow(flowId);
+  if (!flow) redirect("/self-service/recovery/browser");
 
-  if (error) {
-    return (
-      <Card title="Reset your password">
-        <Alert notice={{ kind: "error", text: error }} />
-      </Card>
-    );
-  }
-  if (!flow) return <Loading />;
+  const action = (path: string) => `/self-service/recovery${path}?flow=${flow.id}`;
 
-  // Local progress wins; otherwise trust the flow (covers redirect landings).
-  const current = step ?? stepOf(flow);
-  const csrf = flow.csrf_token ?? "";
-
-  async function run<T>(
-    call: Promise<{ ok: boolean; status: number; data: T }>,
-    onOk: (data: T) => void,
-  ) {
-    setPending(true);
-    setNotice(null);
-    const result = await call;
-    setPending(false);
-    if (!result.ok) {
-      return setNotice({ kind: "error", text: errorText(result) });
-    }
-    onOk(result.data);
+  if (flow.state === "second_factor_required") {
+    return <SecondFactor flow={flow} scope="recovery" />;
   }
 
-  if (current === "factor") {
-    return (
-      <SecondFactor
-        flowId={flow.id}
-        csrf={csrf}
-        methods={methods ?? flow.ui?.methods ?? []}
-        scope="recovery"
-        onDone={() => setStep("password")}
-      />
-    );
-  }
-
-  if (current === "code") {
+  if (flow.state === "code_required") {
     return (
       <Card
         title="Enter your code"
-        // Anti-enumeration: the server answers identically whether or not the
-        // address exists, so this copy must stay conditional.
-        subtitle={
-          address
-            ? `If ${address} belongs to an account, a code is on its way.`
-            : "If that address belongs to an account, a code is on its way."
-        }
+        // Anti-enumeration: the answer is identical whether or not the address
+        // exists, so this copy must stay conditional.
+        subtitle="If that address belongs to an account, a code is on its way."
       >
-        <Alert notice={notice ?? noticeFromFlow(flow.messages)} />
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            const code = formValues(event)("code");
-            run(pratu.submitRecoveryCode(flow.id, csrf, code), (data) => {
-              if (data.state === "second_factor_required") {
-                setMethods(data.methods ?? []);
-                setStep("factor");
-              } else {
-                setStep("password");
-              }
-            });
-          }}
-          className="space-y-4"
-        >
+        <Messages messages={flow.messages} />
+        <FlowForm action={action("/code")} csrf={flow.csrf_token}>
           <CodeField />
-          <Button pending={pending}>Continue</Button>
-        </form>
+          <Button>Continue</Button>
+        </FlowForm>
       </Card>
     );
   }
 
-  if (current === "password") {
+  if (flow.state === "password_required") {
     return (
       <Card
         title="Choose a new password"
         subtitle="Completing this signs you in and logs out every other device."
       >
-        <Alert notice={notice ?? noticeFromFlow(flow.messages)} />
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            const password = formValues(event)("password");
-            run(
-              pratu.submitRecoveryPassword(flow.id, csrf, password),
-              (data) => afterAuth((data as AuthResult).state),
-            );
-          }}
-          className="space-y-4"
-        >
+        <Messages messages={flow.messages} />
+        <FlowForm action={action("/password")} csrf={flow.csrf_token}>
           <Field
             name="password"
             label="New password"
             type="password"
             required
             autoComplete="new-password"
+            hint="At least 10 characters. Checked against known breached passwords."
           />
-          <p className="text-xs text-neutral-500">
-            At least 10 characters. Checked against known breached passwords.
-          </p>
-          <Button pending={pending}>Set password</Button>
-        </form>
+          <Button>Set password</Button>
+        </FlowForm>
       </Card>
     );
   }
@@ -158,18 +75,8 @@ function RecoveryScreen() {
       title="Reset your password"
       subtitle="Enter the address on your account and we'll send a one-time code."
     >
-      <Alert notice={notice ?? noticeFromFlow(flow.messages)} />
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          const entered = formValues(event)("address");
-          setAddress(entered);
-          run(pratu.submitRecoveryAddress(flow.id, csrf, entered), () =>
-            setStep("code"),
-          );
-        }}
-        className="space-y-4"
-      >
+      <Messages messages={flow.messages} />
+      <FlowForm action={action("")} csrf={flow.csrf_token}>
         <Field
           name="address"
           label="Email"
@@ -177,8 +84,8 @@ function RecoveryScreen() {
           required
           autoComplete="email"
         />
-        <Button pending={pending}>Send code</Button>
-      </form>
+        <Button>Send code</Button>
+      </FlowForm>
 
       <p className="mt-6 text-center text-sm">
         <Link href="/login" className="underline">
@@ -186,13 +93,5 @@ function RecoveryScreen() {
         </Link>
       </p>
     </Card>
-  );
-}
-
-export default function RecoveryPage() {
-  return (
-    <Suspense fallback={<Loading />}>
-      <RecoveryScreen />
-    </Suspense>
   );
 }
